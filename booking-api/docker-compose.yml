@@ -1,0 +1,49 @@
+# Version av Docker Compose syntax
+# (3.9 är stabil och fungerar bra med moderna Docker installationer)
+version: "3.9"
+
+# Definierar alla tjänster (containers) som ska köras
+services:
+  
+  # PostgreSQL databas container
+  postgres:
+    # Vilken image som ska användas från Docker Hub
+    # postgres:15 = stabil och vanlig för produktionsversion
+    image: postgres:15
+
+    # Namnet på containern (lättare att hitta i docker ps)
+    container_name: booking-postgres
+
+    # Starta om container automatiskt om den kraschar
+    # Bra för utvecklings- och produktionslik miljö
+    restart: always
+
+    # Miljövariabler som skickas till PostgresSQL
+    # Dessa används för att initiera databasen vid första start
+    environment:
+      # Namn op databasen som skapas automatiskt
+      - POSTGRES_DB: bookingdb
+
+      - POSTGRES_USER: postgres
+
+      # Databas lösenord (byt detta i produktion!)
+      - POSTGRES_PASSWORD: postgres
+
+  # Port mapping
+  # Format:
+  # host_machine_port:container_port
+  #
+  # 5432 är standard PostgrSQL port
+  # Detta gör att Spring Boot kan ansluta via localhost
+  ports:
+    - "5432:5432"
+
+  # Volumes = persistent storage
+  # Viktigt så att datan inte försvinner när container stoppas
+  volumes:
+    - postgres-data_/var/lib/postgresql/data
+
+# Deifinierar namngivna volumes
+# (Annars skapas de temporärt)
+volumes:
+  postgres-data:
