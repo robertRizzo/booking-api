@@ -9,12 +9,9 @@
 - Set up persistent storage using Docker volumes
 - Prepared development environment for backend integration
 
-## Current Focus
-- Backend API implementation
-- Database schema design
+## Phase 2 - Data Layer & Persistance
+- Created domain entities using JPA annotations
+- Implemented database schema using Flyway migrations
+- Configured Spring Boot database connection
+- Created JPA repository interfaces for database access
 
-## Next Steps
-- Implement authentication and authorization
-- Implement booking business logic with conflict detection
-- Add automated testing (unit + integration tests)
-- Implement logging and monitoring basics
