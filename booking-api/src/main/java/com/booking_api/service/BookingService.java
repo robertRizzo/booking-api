@@ -41,6 +41,13 @@ public class BookingService
             .toList();
     }
 
+    public List<BookingResponse> getBookingsByUserEmail(String email)
+    {
+        return bookingRepository.findByUserEmail(email).stream()
+            .map(this::toResponse)
+            .toList();
+    }
+
     public BookingResponse getBookingById(Long id)
     {
         Booking booking = bookingRepository.findById(id)
@@ -112,7 +119,21 @@ public class BookingService
         return toResponse(saved);
     }
 
-    public void cancelBooking(Long id)
+    public void cancelBooking(Long id, String currentUserEmail)
+    {
+        Booking existing = bookingRepository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
+
+        if(!existing.getUser().getEmail().equals(currentUserEmail))
+        {
+            throw new IllegalStateException("You can only cancel your own bookings");
+        }
+
+        existing.setStatus(Status.CANCELLED);
+        bookingRepository.save(existing);
+    }
+
+    public void adminCancelBooking(Long id)
     {
         Booking existing = bookingRepository.findById(id)
             .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
