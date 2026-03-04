@@ -1,8 +1,4 @@
 spring:
-  security:
-    user:
-      name: admin
-      password: admin
   datasource:
     url: jdbc:postgresql://localhost:5432/bookingdb
     username: postgres
@@ -23,3 +19,7 @@ management:
     web:
       exposure:
         include: health,info
+
+jwt:
+  secret: nWE0FEfk9gRSSM1F6uATmVI9mW61RtssqTMgZiAdAwE=
+  expiration: 86400000
