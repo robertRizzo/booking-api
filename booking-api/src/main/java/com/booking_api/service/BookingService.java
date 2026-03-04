@@ -91,23 +91,18 @@ public class BookingService
     {
         Booking existing = bookingRepository.findById(id)
             .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
-        
+
         validateTimeRange(request.startTime(), request.endTime());
 
         Room room = roomRepository.findById(request.roomId())
             .orElseThrow(() -> new ResourceNotFoundException("Room not found with id: " + request.roomId()));
 
-        List<Booking> conflicts = bookingRepository.findConflictingBookings(
-            room.getId(),
-            request.startTime(),
-            request.endTime()
-        );
+        List<Booking> conflicts = bookingRepository.findConflictingBookingsExcluding(
+            room.getId(), id, request.startTime(), request.endTime());
 
-        conflicts.removeIf(b -> b.getId().equals(id));
-
-        if(!conflicts.isEmpty())
+        if (!conflicts.isEmpty())
         {
-            throw new ResourceNotFoundException("Room is already booked during this time");
+            throw new BookingConflictException("Room is already booked during this time");
         }
 
         existing.setRoom(room);
@@ -115,7 +110,6 @@ public class BookingService
         existing.setEndTime(request.endTime());
 
         Booking saved = bookingRepository.save(existing);
-
         return toResponse(saved);
     }
 
