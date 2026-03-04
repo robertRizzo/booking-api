@@ -4,6 +4,8 @@ import java.util.List;
 
 import org.springframework.stereotype.Service;
 
+import com.booking_api.dto.RoomRequest;
+import com.booking_api.dto.RoomResponse;
 import com.booking_api.model.Room;
 import com.booking_api.repository.RoomRepository;
 
@@ -17,31 +19,40 @@ public class RoomService
         this.roomRepository = roomRepository;
     }
 
-    public Room getRoomById(Long id)
+    public List<RoomResponse> getAllRooms()
     {
-        return roomRepository.findById(id)
+        return roomRepository.findAll().stream()
+            .map(this::toResponse)
+            .toList();
+    }
+
+    public RoomResponse getRoomById(Long id)
+    {
+        Room room = roomRepository.findById(id)
             .orElseThrow(() -> new IllegalArgumentException("Room not found with id: " + id));
+        return toResponse(room);
     }
 
-    public List<Room> getAllRooms()
+    public RoomResponse createRoom(RoomRequest request)
     {
-        return roomRepository.findAll();
+        Room room = new Room();
+        room.setName(request.name());
+        room.setCapacity(request.capacity());
+
+        Room saved = roomRepository.save(room);
+        return toResponse(saved);
     }
 
-    public Room createRoom(Room room)
-    {
-        return roomRepository.save(room);
-    }
-
-    public Room updateRoom(Long id, Room roomDetails)
+    public RoomResponse updateRoom(Long id, RoomRequest request)
     {
         Room existing = roomRepository.findById(id)
             .orElseThrow(() -> new IllegalArgumentException("Room not found with id: " + id));
 
-        existing.setName(roomDetails.getName());
-        existing.setCapacity(roomDetails.getCapacity());
+        existing.setName(request.name());
+        existing.setCapacity(request.capacity());
 
-        return roomRepository.save(existing);
+        Room saved = roomRepository.save(existing);
+        return toResponse(saved);
     }
 
     public void deleteRoom(Long id)
@@ -52,5 +63,10 @@ public class RoomService
         }
         
         roomRepository.deleteById(id);
+    }
+
+    private RoomResponse toResponse(Room room)
+    {
+        return new RoomResponse(room.getId(), room.getName(), room.getCapacity());
     }
 }

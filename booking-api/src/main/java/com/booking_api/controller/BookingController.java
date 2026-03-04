@@ -14,9 +14,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.booking_api.dto.BookingRequest;
+import com.booking_api.dto.BookingResponse;
 import com.booking_api.model.Booking;
 import com.booking_api.model.Status;
 import com.booking_api.service.BookingService;
+
+import jakarta.validation.Valid;
 
 @RestController
 @RequestMapping("/api/bookings")
@@ -30,32 +34,30 @@ public class BookingController
     }
     
     @GetMapping
-    public ResponseEntity<List<Booking>> getAllBookings()
+    public ResponseEntity<List<BookingResponse>> getAllBookings()
     {
-        List<Booking> bookings = bookingService.getAllBookings();
-        return ResponseEntity.ok(bookings);
+        return ResponseEntity.ok(bookingService.getAllBookings());
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<Booking> getBookingById(@PathVariable Long id)
+    public ResponseEntity<BookingResponse> getBookingById(@PathVariable Long id)
     {
-        Booking booking = bookingService.getBookingById(id);
-        return ResponseEntity.ok(booking);
+        return ResponseEntity.ok(bookingService.getBookingById(id));
     }
 
     
     @PostMapping
-    public ResponseEntity<Booking> createBooking(@RequestBody Booking booking)
+    public ResponseEntity<BookingResponse> createBooking(@Valid @RequestBody BookingRequest request)
     {
-        Booking created = bookingService.createBooking(booking);
-        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+        BookingResponse response = bookingService.createBooking(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<Booking> updateBooking(@PathVariable Long id, @RequestBody Booking booking)
+    public ResponseEntity<BookingResponse> updateBooking(@PathVariable Long id, @Valid @RequestBody BookingRequest request)
     {
-        Booking updated = bookingService.updateBooking(id, booking);
-        return ResponseEntity.ok(updated);
+        
+        return ResponseEntity.ok(bookingService.updateBooking(id, request));
     }
 
     @DeleteMapping("/{id}")
@@ -64,17 +66,4 @@ public class BookingController
         bookingService.cancelBooking(id);
         return ResponseEntity.noContent().build();
     }
-
-    @PutMapping("/{id}/status")
-    public ResponseEntity<Booking> updateStatus(
-        @PathVariable Long id,
-        @RequestParam Status status
-    ) 
-    {
-        return ResponseEntity.ok(
-            bookingService.updateBookingStatus(id, status)
-        );
-    }
-
-    // @DeleteMapping     
 }

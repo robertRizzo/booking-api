@@ -5,8 +5,12 @@ import java.util.List;
 
 import org.springframework.stereotype.Service;
 
+import com.booking_api.dto.BookingRequest;
+import com.booking_api.dto.BookingResponse;
 import com.booking_api.model.Booking;
+import com.booking_api.model.Room;
 import com.booking_api.model.Status;
+import com.booking_api.model.User;
 import com.booking_api.repository.BookingRepository;
 import com.booking_api.repository.RoomRepository;
 import com.booking_api.repository.UserRepository;
@@ -28,39 +32,42 @@ public class BookingService
         this.userRepository = userRepository;
     }
 
-    public List<Booking> getAllBookings()
+    public List<BookingResponse> getAllBookings()
     {
-        return bookingRepository.findAll();
+        return bookingRepository.findAll().stream()
+            .map(this::toResponse)
+            .toList();
     }
 
-    public Booking getBookingById(Long id)
+    public BookingResponse getBookingById(Long id)
     {
-        return bookingRepository.findById(id)
+        Booking booking = bookingRepository.findById(id)
             .orElseThrow(() -> new IllegalArgumentException("Booking not found with id: " + id));
+            return toResponse(booking);
     }
 
-    public Booking createBooking(Booking booking)
+    public BookingResponse createBooking(BookingRequest request)
     {
-        if(booking.getStartTime().isAfter(booking.getEndTime()) || booking.getStartTime().isEqual(booking.getEndTime()))
+        if(request.startTime().isAfter(request.endTime()) || request.startTime().isEqual(request.endTime()))
         {
-            throw new IllegalArgumentException("Invalid time range");
+            throw new IllegalArgumentException("Start time must be before end time");
         }
 
-        if(booking.getStartTime().isBefore(LocalDateTime.now()))
+        if(request.startTime().isBefore(LocalDateTime.now()))
         {
             throw new IllegalArgumentException("Booking cannot start in the past");
         }
 
-        userRepository.findById(booking.getUser().getId())
-            .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        User user = userRepository.findById(request.userId())
+            .orElseThrow(() -> new IllegalArgumentException("User not found with id: " + request.userId()));
 
-        roomRepository.findById(booking.getRoom().getId())
-            .orElseThrow(() -> new IllegalArgumentException("Room not found"));
+        Room room = roomRepository.findById(request.roomId())
+            .orElseThrow(() -> new IllegalArgumentException("Room not found with id:" + request.roomId()));
 
         List<Booking> conflicts = bookingRepository.findConflictingBookings(
-            booking.getRoom().getId(),
-            booking.getStartTime(),
-            booking.getEndTime()
+            room.getId(),
+            request.startTime(),
+            request.endTime()
         );
 
         if(!conflicts.isEmpty())
@@ -68,29 +75,40 @@ public class BookingService
             throw new IllegalStateException("Room is already booked during this time");
         }
 
-        return bookingRepository.save(booking);
+        Booking booking = new Booking();
+        booking.setUser(user);
+        booking.setRoom(room);
+        booking.setStartTime(request.startTime());
+        booking.setEndTime(request.endTime());
+        booking.setStatus(Status.CONFIRMED);
+        
+        Booking saved = bookingRepository.save(booking);
+        return toResponse(saved);
     }
 
-    public Booking updateBooking(Long id, Booking bookingDetails)
+    public BookingResponse updateBooking(Long id, BookingRequest request)
     {
         Booking existing = bookingRepository.findById(id)
             .orElseThrow(() -> new IllegalArgumentException("Booking not found with id: " + id));
         
-        if(bookingDetails.getStartTime().isAfter(bookingDetails.getEndTime())
-            || bookingDetails.getStartTime().isEqual(bookingDetails.getEndTime()))
+        if(request.startTime().isAfter(request.endTime())
+            || request.startTime().isEqual(request.endTime()))
         {
-            throw new IllegalArgumentException("Invalid time range");
+            throw new IllegalArgumentException("Statr time must be before end time");
         }
 
-        if(bookingDetails.getStartTime().isBefore(LocalDateTime.now()))
+        if(request.startTime().isBefore(LocalDateTime.now()))
         {
             throw new IllegalArgumentException("Booking cannot start in the past");
         }
 
+        Room room = roomRepository.findById(request.roomId())
+            .orElseThrow(() -> new IllegalArgumentException("Room not found with id: " + request.roomId()));
+
         List<Booking> conflicts = bookingRepository.findConflictingBookings(
-            bookingDetails.getRoom().getId(),
-            bookingDetails.getStartTime(),
-            bookingDetails.getEndTime()
+            room.getId(),
+            request.startTime(),
+            request.endTime()
         );
 
         conflicts.removeIf(b -> b.getId().equals(id));
@@ -100,11 +118,13 @@ public class BookingService
             throw new IllegalArgumentException("Room is already booked during this time");
         }
 
-        existing.setRoom(bookingDetails.getRoom());
-        existing.setStartTime(bookingDetails.getStartTime());
-        existing.setEndTime(bookingDetails.getEndTime());
+        existing.setRoom(room);
+        existing.setStartTime(request.startTime());
+        existing.setEndTime(request.endTime());
 
-        return bookingRepository.save(existing);
+        Booking saved = bookingRepository.save(existing);
+
+        return toResponse(saved);
     }
 
     public void cancelBooking(Long id)
@@ -116,28 +136,17 @@ public class BookingService
         bookingRepository.save(existing);
     }
 
-    public Booking updateBookingStatus(Long id, Status status)
+    private BookingResponse toResponse(Booking booking)
     {
-        Booking booking = bookingRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Booking not found"));
-
-        validateStatusTransition(booking.getStatus(), status);
-
-        booking.setStatus(status);
-
-        return bookingRepository.save(booking);
-    }
-
-    private void validateStatusTransition(Status current, Status newStatus)
-    {
-        if(current == Status.CANCELLED || current == Status.COMPLETED)
-        {
-            throw new RuntimeException("Cannot modify completed or cancelled booking");
-        }
-
-        if(current == Status.PENDING && newStatus == Status.COMPLETED)
-        {
-            throw new RuntimeException("Pending booking cannot be completed directly");
-        }
+        return new BookingResponse(
+            booking.getId(),
+            booking.getUser().getId(),
+            booking.getUser().getEmail(),
+            booking.getRoom().getId(),
+            booking.getRoom().getName(),
+            booking.getStartTime(),
+            booking.getEndTime(),
+            booking.getStatus().name()
+        );
     }
 }
