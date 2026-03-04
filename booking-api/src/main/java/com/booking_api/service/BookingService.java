@@ -28,6 +28,17 @@ public class BookingService
         this.userRepository = userRepository;
     }
 
+    public List<Booking> getAllBookings()
+    {
+        return bookingRepository.findAll();
+    }
+
+    public Booking getBookingById(Long id)
+    {
+        return bookingRepository.findById(id)
+            .orElseThrow(() -> new IllegalArgumentException("Booking not found with id: " + id));
+    }
+
     public Booking createBooking(Booking booking)
     {
         if(booking.getStartTime().isAfter(booking.getEndTime()) || booking.getStartTime().isEqual(booking.getEndTime()))
@@ -60,9 +71,54 @@ public class BookingService
         return bookingRepository.save(booking);
     }
 
-    public Booking updateBookingStatus(Long bookingId, Status status)
+    public Booking updateBooking(Long id, Booking bookingDetails)
     {
-        Booking booking = bookingRepository.findById(bookingId)
+        Booking existing = bookingRepository.findById(id)
+            .orElseThrow(() -> new IllegalArgumentException("Booking not found with id: " + id));
+        
+        if(bookingDetails.getStartTime().isAfter(bookingDetails.getEndTime())
+            || bookingDetails.getStartTime().isEqual(bookingDetails.getEndTime()))
+        {
+            throw new IllegalArgumentException("Invalid time range");
+        }
+
+        if(bookingDetails.getStartTime().isBefore(LocalDateTime.now()))
+        {
+            throw new IllegalArgumentException("Booking cannot start in the past");
+        }
+
+        List<Booking> conflicts = bookingRepository.findConflictingBookings(
+            bookingDetails.getRoom().getId(),
+            bookingDetails.getStartTime(),
+            bookingDetails.getEndTime()
+        );
+
+        conflicts.removeIf(b -> b.getId().equals(id));
+
+        if(!conflicts.isEmpty())
+        {
+            throw new IllegalArgumentException("Room is already booked during this time");
+        }
+
+        existing.setRoom(bookingDetails.getRoom());
+        existing.setStartTime(bookingDetails.getStartTime());
+        existing.setEndTime(bookingDetails.getEndTime());
+
+        return bookingRepository.save(existing);
+    }
+
+    public void cancelBooking(Long id)
+    {
+        Booking existing = bookingRepository.findById(id)
+            .orElseThrow(() -> new IllegalArgumentException("Booking not found with id: " + id));
+
+        existing.setStatus(Status.CANCELLED);
+        bookingRepository.save(existing);
+    }
+
+    public Booking updateBookingStatus(Long id, Status status)
+    {
+        Booking booking = bookingRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Booking not found"));
 
         validateStatusTransition(booking.getStatus(), status);
