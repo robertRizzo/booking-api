@@ -7,6 +7,8 @@ import org.springframework.stereotype.Service;
 
 import com.booking_api.dto.BookingRequest;
 import com.booking_api.dto.BookingResponse;
+import com.booking_api.exception.BookingConflictException;
+import com.booking_api.exception.ResourceNotFoundException;
 import com.booking_api.model.Booking;
 import com.booking_api.model.Room;
 import com.booking_api.model.Status;
@@ -42,27 +44,19 @@ public class BookingService
     public BookingResponse getBookingById(Long id)
     {
         Booking booking = bookingRepository.findById(id)
-            .orElseThrow(() -> new IllegalArgumentException("Booking not found with id: " + id));
+            .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
             return toResponse(booking);
     }
 
     public BookingResponse createBooking(BookingRequest request)
     {
-        if(request.startTime().isAfter(request.endTime()) || request.startTime().isEqual(request.endTime()))
-        {
-            throw new IllegalArgumentException("Start time must be before end time");
-        }
-
-        if(request.startTime().isBefore(LocalDateTime.now()))
-        {
-            throw new IllegalArgumentException("Booking cannot start in the past");
-        }
+        validateTimeRange(request.startTime(), request.endTime());
 
         User user = userRepository.findById(request.userId())
-            .orElseThrow(() -> new IllegalArgumentException("User not found with id: " + request.userId()));
+            .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + request.userId()));
 
         Room room = roomRepository.findById(request.roomId())
-            .orElseThrow(() -> new IllegalArgumentException("Room not found with id:" + request.roomId()));
+            .orElseThrow(() -> new ResourceNotFoundException("Room not found with id:" + request.roomId()));
 
         List<Booking> conflicts = bookingRepository.findConflictingBookings(
             room.getId(),
@@ -72,7 +66,7 @@ public class BookingService
 
         if(!conflicts.isEmpty())
         {
-            throw new IllegalStateException("Room is already booked during this time");
+            throw new BookingConflictException("Room is already booked during this time");
         }
 
         Booking booking = new Booking();
@@ -89,21 +83,12 @@ public class BookingService
     public BookingResponse updateBooking(Long id, BookingRequest request)
     {
         Booking existing = bookingRepository.findById(id)
-            .orElseThrow(() -> new IllegalArgumentException("Booking not found with id: " + id));
+            .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
         
-        if(request.startTime().isAfter(request.endTime())
-            || request.startTime().isEqual(request.endTime()))
-        {
-            throw new IllegalArgumentException("Statr time must be before end time");
-        }
-
-        if(request.startTime().isBefore(LocalDateTime.now()))
-        {
-            throw new IllegalArgumentException("Booking cannot start in the past");
-        }
+        validateTimeRange(request.startTime(), request.endTime());
 
         Room room = roomRepository.findById(request.roomId())
-            .orElseThrow(() -> new IllegalArgumentException("Room not found with id: " + request.roomId()));
+            .orElseThrow(() -> new ResourceNotFoundException("Room not found with id: " + request.roomId()));
 
         List<Booking> conflicts = bookingRepository.findConflictingBookings(
             room.getId(),
@@ -115,7 +100,7 @@ public class BookingService
 
         if(!conflicts.isEmpty())
         {
-            throw new IllegalArgumentException("Room is already booked during this time");
+            throw new ResourceNotFoundException("Room is already booked during this time");
         }
 
         existing.setRoom(room);
@@ -130,10 +115,22 @@ public class BookingService
     public void cancelBooking(Long id)
     {
         Booking existing = bookingRepository.findById(id)
-            .orElseThrow(() -> new IllegalArgumentException("Booking not found with id: " + id));
+            .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
 
         existing.setStatus(Status.CANCELLED);
         bookingRepository.save(existing);
+    }
+
+    private void validateTimeRange(LocalDateTime startTime, LocalDateTime endTime)
+    {
+        if(startTime.isAfter(endTime) || startTime.isEqual(endTime))
+        {
+            throw new IllegalArgumentException("Start time must be before end time");
+        }
+        if(startTime.isBefore(LocalDateTime.now()))
+        {
+            throw new IllegalArgumentException("Booking cannot start in the past");
+        }
     }
 
     private BookingResponse toResponse(Booking booking)

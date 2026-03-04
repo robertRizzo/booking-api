@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 
 import com.booking_api.dto.UserRequest;
 import com.booking_api.dto.UserResponse;
+import com.booking_api.exception.ResourceNotFoundException;
 import com.booking_api.model.Role;
 import com.booking_api.model.User;
 import com.booking_api.repository.UserRepository;
@@ -30,7 +31,7 @@ public class UserService
     public UserResponse getUserById(Long id)
     {
         User user = userRepository.findById(id)
-            .orElseThrow(() -> new IllegalArgumentException("User not found with id: " + id));
+            .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + id));
         return toResponse(user);
     }
 
@@ -48,7 +49,7 @@ public class UserService
     public UserResponse updateUser(Long id, UserRequest request)
     {
         User existing = userRepository.findById(id)
-            .orElseThrow(() -> new IllegalArgumentException("User not found with id: " + id));
+            .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + id));
         
         existing.setEmail(request.email());
         existing.setPassword(request.password());
@@ -63,7 +64,7 @@ public class UserService
     {
         if(!userRepository.existsById(id))
         {
-            throw new IllegalArgumentException("User not found with id: " + id);
+            throw new ResourceNotFoundException("User not found with id: " + id);
         }
         userRepository.deleteById(id);
     }
@@ -78,9 +79,9 @@ public class UserService
         {
             return Role.valueOf(role.toUpperCase());
         }
-        catch(IllegalArgumentException e)
+        catch(ResourceNotFoundException e)
         {
-            throw new IllegalArgumentException("Invalid role: " + role + ". Must be USER or ADMIN");
+            throw new ResourceNotFoundException("Invalid role: " + role + ". Must be USER or ADMIN");
         }
     }
 

@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 
 import com.booking_api.dto.RoomRequest;
 import com.booking_api.dto.RoomResponse;
+import com.booking_api.exception.ResourceNotFoundException;
 import com.booking_api.model.Room;
 import com.booking_api.repository.RoomRepository;
 
@@ -29,7 +30,7 @@ public class RoomService
     public RoomResponse getRoomById(Long id)
     {
         Room room = roomRepository.findById(id)
-            .orElseThrow(() -> new IllegalArgumentException("Room not found with id: " + id));
+            .orElseThrow(() -> new ResourceNotFoundException("Room not found with id: " + id));
         return toResponse(room);
     }
 
@@ -46,7 +47,7 @@ public class RoomService
     public RoomResponse updateRoom(Long id, RoomRequest request)
     {
         Room existing = roomRepository.findById(id)
-            .orElseThrow(() -> new IllegalArgumentException("Room not found with id: " + id));
+            .orElseThrow(() -> new ResourceNotFoundException("Room not found with id: " + id));
 
         existing.setName(request.name());
         existing.setCapacity(request.capacity());
@@ -59,7 +60,7 @@ public class RoomService
     {
         if(!roomRepository.existsById(id))
         {
-            throw new IllegalArgumentException("Room not found with id:" + id);
+            throw new ResourceNotFoundException("Room not found with id:" + id);
         }
         
         roomRepository.deleteById(id);
