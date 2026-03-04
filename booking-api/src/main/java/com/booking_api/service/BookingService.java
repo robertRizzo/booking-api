@@ -6,6 +6,7 @@ import java.util.List;
 import org.springframework.stereotype.Service;
 
 import com.booking_api.model.Booking;
+import com.booking_api.model.Status;
 import com.booking_api.repository.BookingRepository;
 import com.booking_api.repository.RoomRepository;
 import com.booking_api.repository.UserRepository;
@@ -57,5 +58,30 @@ public class BookingService
         }
 
         return bookingRepository.save(booking);
+    }
+
+    public Booking updateBookingStatus(Long bookingId, Status status)
+    {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new RuntimeException("Booking not found"));
+
+        validateStatusTransition(booking.getStatus(), status);
+
+        booking.setStatus(status);
+
+        return bookingRepository.save(booking);
+    }
+
+    private void validateStatusTransition(Status current, Status newStatus)
+    {
+        if(current == Status.CANCELLED || current == Status.COMPLETED)
+        {
+            throw new RuntimeException("Cannot modify completed or cancelled booking");
+        }
+
+        if(current == Status.PENDING && newStatus == Status.COMPLETED)
+        {
+            throw new RuntimeException("Pending booking cannot be completed directly");
+        }
     }
 }
