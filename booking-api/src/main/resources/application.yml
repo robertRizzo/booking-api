@@ -1,4 +1,13 @@
 spring:
+  management:
+    endpoints:
+      web:
+        exposure:
+          include: health,info
+  security:
+    user:
+      name: admin
+      password: admin
   datasource:
     url: jdbc:postgresql://localhost:5432/bookingdb
     username: postgres
@@ -12,3 +21,4 @@ spring:
 
   flyway:
     enabled: true
+    baseline-on-migrate: true

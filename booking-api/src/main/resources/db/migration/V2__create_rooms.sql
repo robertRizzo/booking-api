@@ -1,0 +1,5 @@
+CREATE TABLE rooms (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(255) UNIQUE NOT NULL,
+    capacity INTEGER NOT NULL
+);
