@@ -2230,7 +2230,7 @@ curl -X POST http://localhost:8080/api/auth/login \
 
 # Use the token
 curl http://localhost:8080/api/rooms \
-  -H "Authorization: Bearer eyJhbG..."
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbkB0ZXN0LmNvbSIsImlhdCI6MTc3MjY1NTU5MCwiZXhwIjoxNzcyNzQxOTkwfQ.JzUQ0jDhbSpm8LNc2ighBBGZbjyn6xqupVaNkhTtjz4"
 ```
 
 Note: The seeded admin user in `V4__seed_admin_user.sql` has a BCrypt hash of `admin123`. Verify this matches by checking that `BCrypt.matches("admin123", "$2a$10$gVQGfWq0rk2s54lnLxfDTu56633f34dOmk0eJ3VC4oUi6CcnI4C.W")` returns true. If it does not, create a new migration `V5__update_admin_password.sql` with a hash you generate yourself using an online BCrypt generator or a small Java main method.
@@ -2784,6 +2784,8 @@ git commit -m "feat: complete booking conflict detection with status-aware queri
 - Integration testing with `@SpringBootTest`
 - Testing Spring Security protected endpoints
 - The test pyramid: what to unit test vs integration test
+- Using test factories to eliminate duplicated setup code
+- Shared base classes for integration tests
 
 ### Test Strategy
 
@@ -2793,9 +2795,165 @@ git commit -m "feat: complete booking conflict detection with status-aware queri
 | Repository | Integration test (`@DataJpaTest`) | Custom JPQL queries return correct results |
 | Controller | Integration test (`@SpringBootTest`) | HTTP status codes, request/response mapping, security |
 
-### Step 1 - Unit Test BookingService
+Every service gets a unit test class. Every controller gets an integration test class. The `BookingRepository` gets its own integration test because it has custom JPQL queries. `RoomRepository` and `UserRepository` only use standard `JpaRepository` methods, so they are implicitly tested through the service and controller tests.
 
-Unit tests use Mockito to replace real repository calls with controlled fakes. This lets you test business logic in isolation, without a database.
+### Step 1 - Create TestDataFactory
+
+Every test needs `User`, `Room`, `Booking`, and DTO objects. Without a factory, you end up writing `new User(1L, "test@test.com", "password", Role.USER)` dozens of times across test classes. When you add a field to an entity, you have to update every test that constructs one.
+
+A test factory centralizes object creation into static methods. Each test calls the factory instead of constructing objects inline.
+
+Complete `src/test/java/com/booking_api/testutil/TestDataFactory.java`:
+
+```java
+package com.booking_api.testutil;
+
+import java.time.LocalDateTime;
+
+import com.booking_api.dto.BookingRequest;
+import com.booking_api.dto.RoomRequest;
+import com.booking_api.dto.UserRequest;
+import com.booking_api.model.Booking;
+import com.booking_api.model.Role;
+import com.booking_api.model.Room;
+import com.booking_api.model.Status;
+import com.booking_api.model.User;
+
+public final class TestDataFactory
+{
+    private TestDataFactory() {}
+
+    public static User createUser(Long id, String email, Role role)
+    {
+        return new User(id, email, "password", role);
+    }
+
+    public static User createDefaultUser()
+    {
+        return createUser(1L, "test@test.com", Role.USER);
+    }
+
+    public static User createAdminUser()
+    {
+        return createUser(1L, "admin@test.com", Role.ADMIN);
+    }
+
+    public static Room createRoom(Long id, String name, int capacity)
+    {
+        return new Room(id, name, capacity);
+    }
+
+    public static Room createDefaultRoom()
+    {
+        return createRoom(1L, "Room A", 10);
+    }
+
+    public static Booking createBooking(Long id, User user, Room room,
+                                        LocalDateTime start, LocalDateTime end,
+                                        Status status)
+    {
+        return new Booking(id, user, room, start, end, status);
+    }
+
+    public static Booking createConfirmedBooking(Long id, User user, Room room,
+                                                 LocalDateTime start, LocalDateTime end)
+    {
+        return createBooking(id, user, room, start, end, Status.CONFIRMED);
+    }
+
+    public static BookingRequest createBookingRequest(Long userId, Long roomId,
+                                                      int daysFromNow)
+    {
+        LocalDateTime start = LocalDateTime.now().plusDays(daysFromNow);
+        LocalDateTime end = start.plusHours(1);
+        return new BookingRequest(userId, roomId, start, end);
+    }
+
+    public static RoomRequest createRoomRequest(String name, int capacity)
+    {
+        return new RoomRequest(name, capacity);
+    }
+
+    public static UserRequest createUserRequest(String email, String password,
+                                                String role)
+    {
+        return new UserRequest(email, password, role);
+    }
+}
+```
+
+Key design decisions:
+- The class is `final` with a private constructor so it cannot be instantiated or subclassed. It is a pure utility class.
+- `createDefaultUser()` and `createDefaultRoom()` provide single-call convenience for the most common test setup.
+- `createBookingRequest` accepts `daysFromNow` instead of raw `LocalDateTime` values, so tests never accidentally create bookings in the past.
+
+### Step 2 - Create IntegrationTestBase
+
+Controller integration tests all need the same boilerplate: start the app on a random port, inject `TestRestTemplate`, log in to get a token, and build auth headers. Extracting this into a base class means each controller test class inherits the shared logic and only contains its own test methods.
+
+Complete `src/test/java/com/booking_api/testutil/IntegrationTestBase.java`:
+
+```java
+package com.booking_api.testutil;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+public abstract class IntegrationTestBase
+{
+    @Autowired
+    protected TestRestTemplate restTemplate;
+
+    protected String loginAndGetToken(String email, String password)
+    {
+        record LoginRequest(String email, String password) {}
+        record LoginResponse(String token) {}
+
+        LoginRequest request = new LoginRequest(email, password);
+        ResponseEntity<LoginResponse> response = restTemplate.postForEntity(
+            "/api/auth/login", request, LoginResponse.class);
+
+        assertNotNull(response.getBody(), "Login response body was null");
+        return response.getBody().token();
+    }
+
+    protected String loginAsAdmin()
+    {
+        return loginAndGetToken("admin@test.com", "admin123");
+    }
+
+    protected HttpHeaders authHeaders(String token)
+    {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(token);
+        return headers;
+    }
+
+    protected HttpHeaders adminHeaders()
+    {
+        return authHeaders(loginAsAdmin());
+    }
+}
+```
+
+Key design decisions:
+- `loginAsAdmin()` and `adminHeaders()` are one-call shortcuts used in most tests since the seeded admin user is the primary test actor.
+- The class is `abstract` so JUnit does not try to run it as a test class.
+- `@SpringBootTest` on the base class is inherited by subclasses. You do not need to repeat it.
+
+### Step 3 - Unit Tests for All Services
+
+Each service gets its own test class using Mockito. The mocks replace real repositories so the tests run in milliseconds without a database.
+
+#### BookingServiceTest
 
 Complete `src/test/java/com/booking_api/service/BookingServiceTest.java`:
 
@@ -2805,14 +2963,15 @@ package com.booking_api.service;
 import com.booking_api.dto.BookingRequest;
 import com.booking_api.dto.BookingResponse;
 import com.booking_api.exception.BookingConflictException;
+import com.booking_api.exception.ResourceNotFoundException;
 import com.booking_api.model.Booking;
-import com.booking_api.model.Role;
 import com.booking_api.model.Room;
 import com.booking_api.model.Status;
 import com.booking_api.model.User;
 import com.booking_api.repository.BookingRepository;
 import com.booking_api.repository.RoomRepository;
 import com.booking_api.repository.UserRepository;
+import com.booking_api.testutil.TestDataFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -2842,6 +3001,114 @@ class BookingServiceTest
 
     @InjectMocks
     private BookingService bookingService;
+
+    // --- getAllBookings ---
+
+    @Test
+    void getAllBookings_shouldReturnList()
+    {
+        User user = TestDataFactory.createDefaultUser();
+        Room room = TestDataFactory.createDefaultRoom();
+        LocalDateTime start = LocalDateTime.now().plusDays(1);
+        Booking booking = TestDataFactory.createConfirmedBooking(
+            1L, user, room, start, start.plusHours(1));
+
+        when(bookingRepository.findAll()).thenReturn(List.of(booking));
+
+        List<BookingResponse> result = bookingService.getAllBookings();
+
+        assertEquals(1, result.size());
+        assertEquals("test@test.com", result.get(0).userEmail());
+        assertEquals("Room A", result.get(0).roomName());
+    }
+
+    @Test
+    void getAllBookings_shouldReturnEmptyList()
+    {
+        when(bookingRepository.findAll()).thenReturn(Collections.emptyList());
+
+        List<BookingResponse> result = bookingService.getAllBookings();
+
+        assertTrue(result.isEmpty());
+    }
+
+    // --- getBookingsByUserEmail ---
+
+    @Test
+    void getBookingsByUserEmail_shouldReturnUserBookings()
+    {
+        User user = TestDataFactory.createDefaultUser();
+        Room room = TestDataFactory.createDefaultRoom();
+        LocalDateTime start = LocalDateTime.now().plusDays(1);
+        Booking booking = TestDataFactory.createConfirmedBooking(
+            1L, user, room, start, start.plusHours(1));
+
+        when(bookingRepository.findByUserEmail("test@test.com"))
+            .thenReturn(List.of(booking));
+
+        List<BookingResponse> result = bookingService.getBookingsByUserEmail("test@test.com");
+
+        assertEquals(1, result.size());
+        assertEquals("test@test.com", result.get(0).userEmail());
+    }
+
+    // --- getBookingById ---
+
+    @Test
+    void getBookingById_shouldReturnBooking()
+    {
+        User user = TestDataFactory.createDefaultUser();
+        Room room = TestDataFactory.createDefaultRoom();
+        LocalDateTime start = LocalDateTime.now().plusDays(1);
+        Booking booking = TestDataFactory.createConfirmedBooking(
+            1L, user, room, start, start.plusHours(1));
+
+        when(bookingRepository.findById(1L)).thenReturn(Optional.of(booking));
+
+        BookingResponse result = bookingService.getBookingById(1L);
+
+        assertEquals(1L, result.id());
+        assertEquals("test@test.com", result.userEmail());
+        assertEquals("CONFIRMED", result.status());
+    }
+
+    @Test
+    void getBookingById_shouldThrowWhenNotFound()
+    {
+        when(bookingRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThrows(ResourceNotFoundException.class,
+            () -> bookingService.getBookingById(99L));
+    }
+
+    // --- createBooking ---
+
+    @Test
+    void createBooking_shouldSaveWhenNoConflict()
+    {
+        LocalDateTime start = LocalDateTime.now().plusDays(1);
+        LocalDateTime end = start.plusHours(1);
+        BookingRequest request = new BookingRequest(1L, 1L, start, end);
+
+        User user = TestDataFactory.createDefaultUser();
+        Room room = TestDataFactory.createDefaultRoom();
+        Booking saved = TestDataFactory.createConfirmedBooking(1L, user, room, start, end);
+
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+        when(roomRepository.findById(1L)).thenReturn(Optional.of(room));
+        when(bookingRepository.findConflictingBookings(eq(1L), any(), any()))
+            .thenReturn(Collections.emptyList());
+        when(bookingRepository.save(any(Booking.class))).thenReturn(saved);
+
+        BookingResponse response = bookingService.createBooking(request);
+
+        assertNotNull(response);
+        assertEquals(1L, response.id());
+        assertEquals("test@test.com", response.userEmail());
+        assertEquals("Room A", response.roomName());
+        assertEquals("CONFIRMED", response.status());
+        verify(bookingRepository).save(any(Booking.class));
+    }
 
     @Test
     void createBooking_shouldRejectPastStartTime()
@@ -2876,21 +3143,50 @@ class BookingServiceTest
     }
 
     @Test
+    void createBooking_shouldThrowWhenUserNotFound()
+    {
+        LocalDateTime start = LocalDateTime.now().plusDays(1);
+        BookingRequest request = new BookingRequest(99L, 1L, start, start.plusHours(1));
+
+        when(userRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThrows(ResourceNotFoundException.class,
+            () -> bookingService.createBooking(request));
+
+        verify(bookingRepository, never()).save(any());
+    }
+
+    @Test
+    void createBooking_shouldThrowWhenRoomNotFound()
+    {
+        LocalDateTime start = LocalDateTime.now().plusDays(1);
+        BookingRequest request = new BookingRequest(1L, 99L, start, start.plusHours(1));
+
+        User user = TestDataFactory.createDefaultUser();
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+        when(roomRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThrows(ResourceNotFoundException.class,
+            () -> bookingService.createBooking(request));
+
+        verify(bookingRepository, never()).save(any());
+    }
+
+    @Test
     void createBooking_shouldRejectConflictingBooking()
     {
         LocalDateTime start = LocalDateTime.now().plusDays(1);
         LocalDateTime end = start.plusHours(1);
-
         BookingRequest request = new BookingRequest(1L, 1L, start, end);
 
-        User user = new User(1L, "test@test.com", "password", Role.USER);
-        Room room = new Room(1L, "Room A", 10);
-        Booking existingConflict = new Booking(99L, user, room, start, end, Status.CONFIRMED);
+        User user = TestDataFactory.createDefaultUser();
+        Room room = TestDataFactory.createDefaultRoom();
+        Booking conflict = TestDataFactory.createConfirmedBooking(99L, user, room, start, end);
 
         when(userRepository.findById(1L)).thenReturn(Optional.of(user));
         when(roomRepository.findById(1L)).thenReturn(Optional.of(room));
         when(bookingRepository.findConflictingBookings(eq(1L), any(), any()))
-            .thenReturn(List.of(existingConflict));
+            .thenReturn(List.of(conflict));
 
         assertThrows(BookingConflictException.class,
             () -> bookingService.createBooking(request));
@@ -2898,43 +3194,80 @@ class BookingServiceTest
         verify(bookingRepository, never()).save(any());
     }
 
-    @Test
-    void createBooking_shouldSaveWhenNoConflict()
-    {
-        LocalDateTime start = LocalDateTime.now().plusDays(1);
-        LocalDateTime end = start.plusHours(1);
+    // --- updateBooking ---
 
+    @Test
+    void updateBooking_shouldUpdateSuccessfully()
+    {
+        LocalDateTime start = LocalDateTime.now().plusDays(2);
+        LocalDateTime end = start.plusHours(1);
         BookingRequest request = new BookingRequest(1L, 1L, start, end);
 
-        User user = new User(1L, "test@test.com", "password", Role.USER);
-        Room room = new Room(1L, "Room A", 10);
-        Booking savedBooking = new Booking(1L, user, room, start, end, Status.CONFIRMED);
+        User user = TestDataFactory.createDefaultUser();
+        Room room = TestDataFactory.createDefaultRoom();
+        Booking existing = TestDataFactory.createConfirmedBooking(
+            1L, user, room, LocalDateTime.now().plusDays(1),
+            LocalDateTime.now().plusDays(1).plusHours(1));
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+        when(bookingRepository.findById(1L)).thenReturn(Optional.of(existing));
         when(roomRepository.findById(1L)).thenReturn(Optional.of(room));
-        when(bookingRepository.findConflictingBookings(eq(1L), any(), any()))
+        when(bookingRepository.findConflictingBookingsExcluding(eq(1L), eq(1L), any(), any()))
             .thenReturn(Collections.emptyList());
-        when(bookingRepository.save(any(Booking.class))).thenReturn(savedBooking);
+        when(bookingRepository.save(any(Booking.class))).thenReturn(existing);
 
-        BookingResponse response = bookingService.createBooking(request);
+        BookingResponse response = bookingService.updateBooking(1L, request);
 
         assertNotNull(response);
-        assertEquals(1L, response.id());
-        assertEquals("test@test.com", response.userEmail());
-        assertEquals("Room A", response.roomName());
-        assertEquals("CONFIRMED", response.status());
-        verify(bookingRepository).save(any(Booking.class));
+        verify(bookingRepository).save(existing);
     }
+
+    @Test
+    void updateBooking_shouldThrowWhenNotFound()
+    {
+        LocalDateTime start = LocalDateTime.now().plusDays(1);
+        BookingRequest request = new BookingRequest(1L, 1L, start, start.plusHours(1));
+
+        when(bookingRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThrows(ResourceNotFoundException.class,
+            () -> bookingService.updateBooking(99L, request));
+    }
+
+    @Test
+    void updateBooking_shouldThrowWhenConflicting()
+    {
+        LocalDateTime start = LocalDateTime.now().plusDays(2);
+        LocalDateTime end = start.plusHours(1);
+        BookingRequest request = new BookingRequest(1L, 1L, start, end);
+
+        User user = TestDataFactory.createDefaultUser();
+        Room room = TestDataFactory.createDefaultRoom();
+        Booking existing = TestDataFactory.createConfirmedBooking(
+            1L, user, room, LocalDateTime.now().plusDays(1),
+            LocalDateTime.now().plusDays(1).plusHours(1));
+        Booking conflict = TestDataFactory.createConfirmedBooking(99L, user, room, start, end);
+
+        when(bookingRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(roomRepository.findById(1L)).thenReturn(Optional.of(room));
+        when(bookingRepository.findConflictingBookingsExcluding(eq(1L), eq(1L), any(), any()))
+            .thenReturn(List.of(conflict));
+
+        assertThrows(BookingConflictException.class,
+            () -> bookingService.updateBooking(1L, request));
+
+        verify(bookingRepository, never()).save(any());
+    }
+
+    // --- cancelBooking ---
 
     @Test
     void cancelBooking_shouldSetStatusToCancelled()
     {
-        User user = new User(1L, "test@test.com", "password", Role.USER);
-        Room room = new Room(1L, "Room A", 10);
-        Booking booking = new Booking(1L, user, room,
-            LocalDateTime.now().plusDays(1),
-            LocalDateTime.now().plusDays(1).plusHours(1),
-            Status.CONFIRMED);
+        User user = TestDataFactory.createDefaultUser();
+        Room room = TestDataFactory.createDefaultRoom();
+        LocalDateTime start = LocalDateTime.now().plusDays(1);
+        Booking booking = TestDataFactory.createConfirmedBooking(
+            1L, user, room, start, start.plusHours(1));
 
         when(bookingRepository.findById(1L)).thenReturn(Optional.of(booking));
         when(bookingRepository.save(any(Booking.class))).thenReturn(booking);
@@ -2944,19 +3277,357 @@ class BookingServiceTest
         assertEquals(Status.CANCELLED, booking.getStatus());
         verify(bookingRepository).save(booking);
     }
+
+    @Test
+    void cancelBooking_shouldRejectWhenNotOwner()
+    {
+        User user = TestDataFactory.createDefaultUser();
+        Room room = TestDataFactory.createDefaultRoom();
+        LocalDateTime start = LocalDateTime.now().plusDays(1);
+        Booking booking = TestDataFactory.createConfirmedBooking(
+            1L, user, room, start, start.plusHours(1));
+
+        when(bookingRepository.findById(1L)).thenReturn(Optional.of(booking));
+
+        assertThrows(IllegalStateException.class,
+            () -> bookingService.cancelBooking(1L, "other@test.com"));
+
+        verify(bookingRepository, never()).save(any());
+    }
+
+    // --- adminCancelBooking ---
+
+    @Test
+    void adminCancelBooking_shouldSetStatusToCancelled()
+    {
+        User user = TestDataFactory.createDefaultUser();
+        Room room = TestDataFactory.createDefaultRoom();
+        LocalDateTime start = LocalDateTime.now().plusDays(1);
+        Booking booking = TestDataFactory.createConfirmedBooking(
+            1L, user, room, start, start.plusHours(1));
+
+        when(bookingRepository.findById(1L)).thenReturn(Optional.of(booking));
+        when(bookingRepository.save(any(Booking.class))).thenReturn(booking);
+
+        bookingService.adminCancelBooking(1L);
+
+        assertEquals(Status.CANCELLED, booking.getStatus());
+        verify(bookingRepository).save(booking);
+    }
 }
 ```
 
-Key testing patterns:
-- `@ExtendWith(MockitoExtension.class)` enables Mockito annotations without starting Spring.
-- `@Mock` creates a fake implementation. `@InjectMocks` creates the real service and injects the mocks.
-- `when(...).thenReturn(...)` programs what the mock returns when called.
-- `verify(..., never()).save(any())` asserts that `save` was NOT called, confirming the validation rejected the request before reaching persistence.
-- `assertThrows` verifies that the correct exception type is thrown.
+#### RoomServiceTest
 
-### Step 2 - Integration Test for BookingRepository
+Complete `src/test/java/com/booking_api/service/RoomServiceTest.java`:
 
-Integration tests run against the real database to verify that JPQL queries produce correct SQL.
+```java
+package com.booking_api.service;
+
+import com.booking_api.dto.RoomRequest;
+import com.booking_api.dto.RoomResponse;
+import com.booking_api.exception.ResourceNotFoundException;
+import com.booking_api.model.Room;
+import com.booking_api.repository.RoomRepository;
+import com.booking_api.testutil.TestDataFactory;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.List;
+import java.util.Optional;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class RoomServiceTest
+{
+    @Mock
+    private RoomRepository roomRepository;
+
+    @InjectMocks
+    private RoomService roomService;
+
+    // --- getAllRooms ---
+
+    @Test
+    void getAllRooms_shouldReturnList()
+    {
+        Room room = TestDataFactory.createDefaultRoom();
+        when(roomRepository.findAll()).thenReturn(List.of(room));
+
+        List<RoomResponse> result = roomService.getAllRooms();
+
+        assertEquals(1, result.size());
+        assertEquals("Room A", result.get(0).name());
+    }
+
+    // --- getRoomById ---
+
+    @Test
+    void getRoomById_shouldReturnRoom()
+    {
+        Room room = TestDataFactory.createDefaultRoom();
+        when(roomRepository.findById(1L)).thenReturn(Optional.of(room));
+
+        RoomResponse result = roomService.getRoomById(1L);
+
+        assertEquals(1L, result.id());
+        assertEquals("Room A", result.name());
+        assertEquals(10, result.capacity());
+    }
+
+    @Test
+    void getRoomById_shouldThrowWhenNotFound()
+    {
+        when(roomRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThrows(ResourceNotFoundException.class,
+            () -> roomService.getRoomById(99L));
+    }
+
+    // --- createRoom ---
+
+    @Test
+    void createRoom_shouldSaveAndReturnResponse()
+    {
+        RoomRequest request = TestDataFactory.createRoomRequest("New Room", 15);
+        Room saved = TestDataFactory.createRoom(1L, "New Room", 15);
+        when(roomRepository.save(any(Room.class))).thenReturn(saved);
+
+        RoomResponse result = roomService.createRoom(request);
+
+        assertEquals("New Room", result.name());
+        assertEquals(15, result.capacity());
+        verify(roomRepository).save(any(Room.class));
+    }
+
+    // --- updateRoom ---
+
+    @Test
+    void updateRoom_shouldUpdateAndReturnResponse()
+    {
+        Room existing = TestDataFactory.createRoom(1L, "Old Room", 10);
+        Room updated = TestDataFactory.createRoom(1L, "Updated Room", 20);
+
+        when(roomRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(roomRepository.save(any(Room.class))).thenReturn(updated);
+
+        RoomRequest request = TestDataFactory.createRoomRequest("Updated Room", 20);
+        RoomResponse result = roomService.updateRoom(1L, request);
+
+        assertEquals("Updated Room", result.name());
+        assertEquals(20, result.capacity());
+        verify(roomRepository).save(existing);
+    }
+
+    @Test
+    void updateRoom_shouldThrowWhenNotFound()
+    {
+        when(roomRepository.findById(99L)).thenReturn(Optional.empty());
+
+        RoomRequest request = TestDataFactory.createRoomRequest("Any", 5);
+
+        assertThrows(ResourceNotFoundException.class,
+            () -> roomService.updateRoom(99L, request));
+
+        verify(roomRepository, never()).save(any());
+    }
+
+    // --- deleteRoom ---
+
+    @Test
+    void deleteRoom_shouldDeleteWhenExists()
+    {
+        when(roomRepository.existsById(1L)).thenReturn(true);
+
+        roomService.deleteRoom(1L);
+
+        verify(roomRepository).deleteById(1L);
+    }
+
+    @Test
+    void deleteRoom_shouldThrowWhenNotFound()
+    {
+        when(roomRepository.existsById(99L)).thenReturn(false);
+
+        assertThrows(ResourceNotFoundException.class,
+            () -> roomService.deleteRoom(99L));
+
+        verify(roomRepository, never()).deleteById(any());
+    }
+}
+```
+
+#### UserServiceTest
+
+Complete `src/test/java/com/booking_api/service/UserServiceTest.java`:
+
+```java
+package com.booking_api.service;
+
+import com.booking_api.dto.UserRequest;
+import com.booking_api.dto.UserResponse;
+import com.booking_api.exception.ResourceNotFoundException;
+import com.booking_api.model.Role;
+import com.booking_api.model.User;
+import com.booking_api.repository.UserRepository;
+import com.booking_api.testutil.TestDataFactory;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.List;
+import java.util.Optional;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class UserServiceTest
+{
+    @Mock
+    private UserRepository userRepository;
+
+    @InjectMocks
+    private UserService userService;
+
+    // --- getAllUsers ---
+
+    @Test
+    void getAllUsers_shouldReturnList()
+    {
+        User user = TestDataFactory.createDefaultUser();
+        when(userRepository.findAll()).thenReturn(List.of(user));
+
+        List<UserResponse> result = userService.getAllUsers();
+
+        assertEquals(1, result.size());
+        assertEquals("test@test.com", result.get(0).email());
+    }
+
+    // --- getUserById ---
+
+    @Test
+    void getUserById_shouldReturnUser()
+    {
+        User user = TestDataFactory.createDefaultUser();
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+
+        UserResponse result = userService.getUserById(1L);
+
+        assertEquals(1L, result.id());
+        assertEquals("test@test.com", result.email());
+        assertEquals("USER", result.role());
+    }
+
+    @Test
+    void getUserById_shouldThrowWhenNotFound()
+    {
+        when(userRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThrows(ResourceNotFoundException.class,
+            () -> userService.getUserById(99L));
+    }
+
+    // --- createUser ---
+
+    @Test
+    void createUser_shouldDefaultToUserRole()
+    {
+        UserRequest request = TestDataFactory.createUserRequest(
+            "new@test.com", "password123", null);
+        User saved = TestDataFactory.createUser(1L, "new@test.com", Role.USER);
+        when(userRepository.save(any(User.class))).thenReturn(saved);
+
+        UserResponse result = userService.createUser(request);
+
+        assertEquals("USER", result.role());
+        verify(userRepository).save(any(User.class));
+    }
+
+    @Test
+    void createUser_shouldParseAdminRole()
+    {
+        UserRequest request = TestDataFactory.createUserRequest(
+            "admin@new.com", "password123", "ADMIN");
+        User saved = TestDataFactory.createUser(1L, "admin@new.com", Role.ADMIN);
+        when(userRepository.save(any(User.class))).thenReturn(saved);
+
+        UserResponse result = userService.createUser(request);
+
+        assertEquals("ADMIN", result.role());
+    }
+
+    // --- updateUser ---
+
+    @Test
+    void updateUser_shouldUpdateAndReturnResponse()
+    {
+        User existing = TestDataFactory.createUser(1L, "old@test.com", Role.USER);
+        User updated = TestDataFactory.createUser(1L, "updated@test.com", Role.ADMIN);
+
+        when(userRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(userRepository.save(any(User.class))).thenReturn(updated);
+
+        UserRequest request = TestDataFactory.createUserRequest(
+            "updated@test.com", "newpass", "ADMIN");
+        UserResponse result = userService.updateUser(1L, request);
+
+        assertEquals("updated@test.com", result.email());
+        assertEquals("ADMIN", result.role());
+        verify(userRepository).save(existing);
+    }
+
+    @Test
+    void updateUser_shouldThrowWhenNotFound()
+    {
+        when(userRepository.findById(99L)).thenReturn(Optional.empty());
+
+        UserRequest request = TestDataFactory.createUserRequest(
+            "any@test.com", "password", "USER");
+
+        assertThrows(ResourceNotFoundException.class,
+            () -> userService.updateUser(99L, request));
+
+        verify(userRepository, never()).save(any());
+    }
+
+    // --- deleteUser ---
+
+    @Test
+    void deleteUser_shouldDeleteWhenExists()
+    {
+        when(userRepository.existsById(1L)).thenReturn(true);
+
+        userService.deleteUser(1L);
+
+        verify(userRepository).deleteById(1L);
+    }
+
+    @Test
+    void deleteUser_shouldThrowWhenNotFound()
+    {
+        when(userRepository.existsById(99L)).thenReturn(false);
+
+        assertThrows(ResourceNotFoundException.class,
+            () -> userService.deleteUser(99L));
+
+        verify(userRepository, never()).deleteById(any());
+    }
+}
+```
+
+### Step 4 - Repository Integration Test
+
+The `BookingRepository` has custom JPQL queries that need to be tested against the real database. `RoomRepository` and `UserRepository` only use standard `JpaRepository` methods (`findAll`, `findById`, `save`, `deleteById`), so they do not need their own test classes -- their correctness is verified by Spring Data JPA itself and by the controller integration tests.
 
 Complete `src/test/java/com/booking_api/repository/BookingRepositoryTest.java`:
 
@@ -3014,6 +3685,8 @@ class BookingRepositoryTest
         room = roomRepository.save(room);
     }
 
+    // --- findConflictingBookings ---
+
     @Test
     void findConflictingBookings_shouldDetectOverlap()
     {
@@ -3028,11 +3701,8 @@ class BookingRepositoryTest
         existing.setStatus(Status.CONFIRMED);
         bookingRepository.save(existing);
 
-        LocalDateTime queryStart = tenAM.plusMinutes(30);
-        LocalDateTime queryEnd = elevenAM.plusMinutes(30);
-
         List<Booking> conflicts = bookingRepository.findConflictingBookings(
-            room.getId(), queryStart, queryEnd);
+            room.getId(), tenAM.plusMinutes(30), elevenAM.plusMinutes(30));
 
         assertFalse(conflicts.isEmpty());
         assertEquals(1, conflicts.size());
@@ -3052,11 +3722,8 @@ class BookingRepositoryTest
         existing.setStatus(Status.CONFIRMED);
         bookingRepository.save(existing);
 
-        LocalDateTime queryStart = elevenAM;
-        LocalDateTime queryEnd = elevenAM.plusHours(1);
-
         List<Booking> conflicts = bookingRepository.findConflictingBookings(
-            room.getId(), queryStart, queryEnd);
+            room.getId(), elevenAM, elevenAM.plusHours(1));
 
         assertTrue(conflicts.isEmpty());
     }
@@ -3081,6 +3748,58 @@ class BookingRepositoryTest
         assertTrue(conflicts.isEmpty());
     }
 
+    // --- findConflictingBookingsExcluding ---
+
+    @Test
+    void findConflictingBookingsExcluding_shouldExcludeOwnBooking()
+    {
+        LocalDateTime tenAM = LocalDateTime.of(2026, 6, 1, 10, 0);
+        LocalDateTime elevenAM = LocalDateTime.of(2026, 6, 1, 11, 0);
+
+        Booking own = new Booking();
+        own.setUser(user);
+        own.setRoom(room);
+        own.setStartTime(tenAM);
+        own.setEndTime(elevenAM);
+        own.setStatus(Status.CONFIRMED);
+        own = bookingRepository.save(own);
+
+        List<Booking> conflicts = bookingRepository.findConflictingBookingsExcluding(
+            room.getId(), own.getId(), tenAM, elevenAM);
+
+        assertTrue(conflicts.isEmpty());
+    }
+
+    @Test
+    void findConflictingBookingsExcluding_shouldDetectOtherConflicts()
+    {
+        LocalDateTime tenAM = LocalDateTime.of(2026, 6, 1, 10, 0);
+        LocalDateTime elevenAM = LocalDateTime.of(2026, 6, 1, 11, 0);
+
+        Booking own = new Booking();
+        own.setUser(user);
+        own.setRoom(room);
+        own.setStartTime(tenAM.plusHours(2));
+        own.setEndTime(elevenAM.plusHours(2));
+        own.setStatus(Status.CONFIRMED);
+        own = bookingRepository.save(own);
+
+        Booking other = new Booking();
+        other.setUser(user);
+        other.setRoom(room);
+        other.setStartTime(tenAM);
+        other.setEndTime(elevenAM);
+        other.setStatus(Status.CONFIRMED);
+        bookingRepository.save(other);
+
+        List<Booking> conflicts = bookingRepository.findConflictingBookingsExcluding(
+            room.getId(), own.getId(), tenAM.plusMinutes(30), elevenAM.plusMinutes(30));
+
+        assertEquals(1, conflicts.size());
+    }
+
+    // --- findByUserEmail ---
+
     @Test
     void findByUserEmail_shouldReturnUserBookings()
     {
@@ -3100,15 +3819,13 @@ class BookingRepositoryTest
 }
 ```
 
-Key testing patterns:
-- `@DataJpaTest` starts a minimal Spring context with only JPA components. It is faster than `@SpringBootTest`.
-- `@AutoConfigureTestDatabase(replace = Replace.NONE)` uses the real PostgreSQL instead of replacing it with an embedded database. Docker must be running.
-- `@BeforeEach` runs before every test to clean the database and insert fresh test data. This prevents test pollution.
-- The third test verifies the status-aware conflict detection: cancelled bookings do not block new ones.
+Note: `BookingRepositoryTest` does not use `TestDataFactory` because `@DataJpaTest` manages entities through JPA, and saved entities need auto-generated IDs from the database. The factory's ID-bearing constructors would conflict with `@GeneratedValue`. The `@BeforeEach` setup uses setters to let JPA assign IDs.
 
-### Step 3 - Controller Integration Test
+### Step 5 - Controller Integration Tests for All Controllers
 
-Controller tests verify the full HTTP stack: serialization, security, validation, and status codes.
+Each controller gets a test class that extends `IntegrationTestBase`. Tests verify the full HTTP cycle: request serialization, JWT authentication, `@PreAuthorize` authorization, `@Valid` input validation, service execution, and response mapping.
+
+#### RoomControllerTest
 
 Complete `src/test/java/com/booking_api/controller/RoomControllerTest.java`:
 
@@ -3117,40 +3834,34 @@ package com.booking_api.controller;
 
 import com.booking_api.dto.RoomRequest;
 import com.booking_api.dto.RoomResponse;
+import com.booking_api.testutil.IntegrationTestBase;
+import com.booking_api.testutil.TestDataFactory;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-class RoomControllerTest
+class RoomControllerTest extends IntegrationTestBase
 {
-    @Autowired
-    private TestRestTemplate restTemplate;
+    // --- security ---
 
     @Test
     void getRooms_withoutAuth_shouldReturn401()
     {
-        ResponseEntity<String> response = restTemplate.getForEntity("/api/rooms", String.class);
+        ResponseEntity<String> response = restTemplate.getForEntity(
+            "/api/rooms", String.class);
         assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
     }
 
     @Test
     void createRoom_withoutAuth_shouldReturn401()
     {
-        RoomRequest request = new RoomRequest("Test Room", 10);
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        HttpEntity<RoomRequest> entity = new HttpEntity<>(request, headers);
+        RoomRequest request = TestDataFactory.createRoomRequest("Test Room", 10);
+        HttpEntity<RoomRequest> entity = new HttpEntity<>(request);
 
         ResponseEntity<String> response = restTemplate.exchange(
             "/api/rooms", HttpMethod.POST, entity, String.class);
@@ -3158,34 +3869,62 @@ class RoomControllerTest
         assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
     }
 
+    // --- GET /api/rooms ---
+
+    @Test
+    void getRooms_asAdmin_shouldReturn200()
+    {
+        HttpEntity<Void> entity = new HttpEntity<>(adminHeaders());
+
+        ResponseEntity<String> response = restTemplate.exchange(
+            "/api/rooms", HttpMethod.GET, entity, String.class);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+    }
+
+    // --- GET /api/rooms/{id} ---
+
+    @Test
+    void getRoomById_asAdmin_shouldReturn200()
+    {
+        HttpHeaders headers = adminHeaders();
+
+        RoomRequest createRequest = TestDataFactory.createRoomRequest("Lookup Room", 8);
+        HttpEntity<RoomRequest> createEntity = new HttpEntity<>(createRequest, headers);
+        ResponseEntity<RoomResponse> createResponse = restTemplate.exchange(
+            "/api/rooms", HttpMethod.POST, createEntity, RoomResponse.class);
+        Long roomId = createResponse.getBody().id();
+
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+        ResponseEntity<RoomResponse> response = restTemplate.exchange(
+            "/api/rooms/" + roomId, HttpMethod.GET, entity, RoomResponse.class);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals("Lookup Room", response.getBody().name());
+    }
+
+    // --- POST /api/rooms ---
+
     @Test
     void createRoom_asAdmin_shouldReturn201()
     {
-        RoomRequest request = new RoomRequest("Integration Test Room", 5);
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(loginAndGetToken("admin@test.com", "admin123"));
-        HttpEntity<RoomRequest> entity = new HttpEntity<>(request, headers);
+        RoomRequest request = TestDataFactory.createRoomRequest("Integration Room", 5);
+        HttpEntity<RoomRequest> entity = new HttpEntity<>(request, adminHeaders());
 
         ResponseEntity<RoomResponse> response = restTemplate.exchange(
             "/api/rooms", HttpMethod.POST, entity, RoomResponse.class);
 
         assertEquals(HttpStatus.CREATED, response.getStatusCode());
         assertNotNull(response.getBody());
-        assertEquals("Integration Test Room", response.getBody().name());
+        assertEquals("Integration Room", response.getBody().name());
         assertEquals(5, response.getBody().capacity());
     }
 
     @Test
     void createRoom_withInvalidData_shouldReturn400()
     {
-        RoomRequest request = new RoomRequest("", -1);
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(loginAndGetToken("admin@test.com", "admin123"));
-        HttpEntity<RoomRequest> entity = new HttpEntity<>(request, headers);
+        RoomRequest request = TestDataFactory.createRoomRequest("", -1);
+        HttpEntity<RoomRequest> entity = new HttpEntity<>(request, adminHeaders());
 
         ResponseEntity<String> response = restTemplate.exchange(
             "/api/rooms", HttpMethod.POST, entity, String.class);
@@ -3193,32 +3932,422 @@ class RoomControllerTest
         assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
     }
 
-    private String loginAndGetToken(String email, String password)
+    // --- PUT /api/rooms/{id} ---
+
+    @Test
+    void updateRoom_asAdmin_shouldReturn200()
     {
-        record LoginRequest(String email, String password) {}
-        record LoginResponse(String token) {}
+        HttpHeaders headers = adminHeaders();
 
-        LoginRequest loginRequest = new LoginRequest(email, password);
-        ResponseEntity<LoginResponse> loginResponse = restTemplate.postForEntity(
-            "/api/auth/login", loginRequest, LoginResponse.class);
+        RoomRequest createRequest = TestDataFactory.createRoomRequest("Before Update", 4);
+        HttpEntity<RoomRequest> createEntity = new HttpEntity<>(createRequest, headers);
+        ResponseEntity<RoomResponse> createResponse = restTemplate.exchange(
+            "/api/rooms", HttpMethod.POST, createEntity, RoomResponse.class);
+        Long roomId = createResponse.getBody().id();
 
-        assertNotNull(loginResponse.getBody());
-        return loginResponse.getBody().token();
+        RoomRequest updateRequest = TestDataFactory.createRoomRequest("After Update", 12);
+        HttpEntity<RoomRequest> updateEntity = new HttpEntity<>(updateRequest, headers);
+        ResponseEntity<RoomResponse> response = restTemplate.exchange(
+            "/api/rooms/" + roomId, HttpMethod.PUT, updateEntity, RoomResponse.class);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals("After Update", response.getBody().name());
+        assertEquals(12, response.getBody().capacity());
+    }
+
+    // --- DELETE /api/rooms/{id} ---
+
+    @Test
+    void deleteRoom_asAdmin_shouldReturn204()
+    {
+        HttpHeaders headers = adminHeaders();
+
+        RoomRequest createRequest = TestDataFactory.createRoomRequest("To Delete", 3);
+        HttpEntity<RoomRequest> createEntity = new HttpEntity<>(createRequest, headers);
+        ResponseEntity<RoomResponse> createResponse = restTemplate.exchange(
+            "/api/rooms", HttpMethod.POST, createEntity, RoomResponse.class);
+        Long roomId = createResponse.getBody().id();
+
+        HttpEntity<Void> deleteEntity = new HttpEntity<>(headers);
+        ResponseEntity<Void> response = restTemplate.exchange(
+            "/api/rooms/" + roomId, HttpMethod.DELETE, deleteEntity, Void.class);
+
+        assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
     }
 }
 ```
 
-Key testing patterns:
-- `@SpringBootTest(webEnvironment = RANDOM_PORT)` starts the full application on a random port, including security, database, and all filters. This is the most realistic test.
-- `TestRestTemplate` sends real HTTP requests to the running application.
-- The `loginAndGetToken` helper method calls the `/api/auth/login` endpoint to get a real JWT, then uses it for subsequent requests. This tests the full authentication flow.
-- `headers.setBearerAuth(token)` adds the `Authorization: Bearer <token>` header.
+#### BookingControllerTest
+
+Complete `src/test/java/com/booking_api/controller/BookingControllerTest.java`:
+
+```java
+package com.booking_api.controller;
+
+import com.booking_api.dto.BookingRequest;
+import com.booking_api.dto.BookingResponse;
+import com.booking_api.dto.RoomRequest;
+import com.booking_api.dto.RoomResponse;
+import com.booking_api.testutil.IntegrationTestBase;
+import com.booking_api.testutil.TestDataFactory;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+
+import java.time.LocalDateTime;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class BookingControllerTest extends IntegrationTestBase
+{
+    private HttpHeaders headers;
+    private Long roomId;
+
+    @BeforeEach
+    void setUp()
+    {
+        headers = adminHeaders();
+
+        RoomRequest roomRequest = TestDataFactory.createRoomRequest("Booking Test Room", 10);
+        HttpEntity<RoomRequest> roomEntity = new HttpEntity<>(roomRequest, headers);
+        ResponseEntity<RoomResponse> roomResponse = restTemplate.exchange(
+            "/api/rooms", HttpMethod.POST, roomEntity, RoomResponse.class);
+
+        assertNotNull(roomResponse.getBody());
+        roomId = roomResponse.getBody().id();
+    }
+
+    private BookingResponse createTestBooking(int daysFromNow)
+    {
+        LocalDateTime start = LocalDateTime.now().plusDays(daysFromNow);
+        BookingRequest request = new BookingRequest(1L, roomId, start, start.plusHours(1));
+        HttpEntity<BookingRequest> entity = new HttpEntity<>(request, headers);
+
+        ResponseEntity<BookingResponse> response = restTemplate.exchange(
+            "/api/bookings", HttpMethod.POST, entity, BookingResponse.class);
+        assertNotNull(response.getBody());
+        return response.getBody();
+    }
+
+    // --- security ---
+
+    @Test
+    void createBooking_withoutAuth_shouldReturn401()
+    {
+        BookingRequest request = new BookingRequest(
+            1L, roomId,
+            LocalDateTime.now().plusDays(5),
+            LocalDateTime.now().plusDays(5).plusHours(1)
+        );
+        HttpEntity<BookingRequest> entity = new HttpEntity<>(request);
+
+        ResponseEntity<String> response = restTemplate.exchange(
+            "/api/bookings", HttpMethod.POST, entity, String.class);
+
+        assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
+    }
+
+    // --- POST /api/bookings ---
+
+    @Test
+    void createBooking_asAdmin_shouldReturn201()
+    {
+        BookingRequest request = new BookingRequest(
+            1L, roomId,
+            LocalDateTime.now().plusDays(10),
+            LocalDateTime.now().plusDays(10).plusHours(1)
+        );
+        HttpEntity<BookingRequest> entity = new HttpEntity<>(request, headers);
+
+        ResponseEntity<BookingResponse> response = restTemplate.exchange(
+            "/api/bookings", HttpMethod.POST, entity, BookingResponse.class);
+
+        assertEquals(HttpStatus.CREATED, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals("CONFIRMED", response.getBody().status());
+        assertEquals(roomId, response.getBody().roomId());
+    }
+
+    @Test
+    void createBooking_conflicting_shouldReturn409()
+    {
+        LocalDateTime start = LocalDateTime.now().plusDays(20);
+        LocalDateTime end = start.plusHours(1);
+
+        BookingRequest first = new BookingRequest(1L, roomId, start, end);
+        HttpEntity<BookingRequest> firstEntity = new HttpEntity<>(first, headers);
+        restTemplate.exchange("/api/bookings", HttpMethod.POST, firstEntity, BookingResponse.class);
+
+        BookingRequest overlapping = new BookingRequest(
+            1L, roomId,
+            start.plusMinutes(30),
+            end.plusMinutes(30)
+        );
+        HttpEntity<BookingRequest> secondEntity = new HttpEntity<>(overlapping, headers);
+
+        ResponseEntity<String> response = restTemplate.exchange(
+            "/api/bookings", HttpMethod.POST, secondEntity, String.class);
+
+        assertEquals(HttpStatus.CONFLICT, response.getStatusCode());
+    }
+
+    // --- GET /api/bookings ---
+
+    @Test
+    void getAllBookings_asAdmin_shouldReturn200()
+    {
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<String> response = restTemplate.exchange(
+            "/api/bookings", HttpMethod.GET, entity, String.class);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+    }
+
+    // --- GET /api/bookings/my ---
+
+    @Test
+    void getMyBookings_asAdmin_shouldReturn200()
+    {
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<String> response = restTemplate.exchange(
+            "/api/bookings/my", HttpMethod.GET, entity, String.class);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+    }
+
+    // --- GET /api/bookings/{id} ---
+
+    @Test
+    void getBookingById_asAdmin_shouldReturn200()
+    {
+        BookingResponse created = createTestBooking(30);
+
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+        ResponseEntity<BookingResponse> response = restTemplate.exchange(
+            "/api/bookings/" + created.id(), HttpMethod.GET, entity, BookingResponse.class);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(created.id(), response.getBody().id());
+    }
+
+    // --- PUT /api/bookings/{id} ---
+
+    @Test
+    void updateBooking_asAdmin_shouldReturn200()
+    {
+        BookingResponse created = createTestBooking(40);
+
+        LocalDateTime newStart = LocalDateTime.now().plusDays(41);
+        BookingRequest updateRequest = new BookingRequest(
+            1L, roomId, newStart, newStart.plusHours(2));
+        HttpEntity<BookingRequest> entity = new HttpEntity<>(updateRequest, headers);
+
+        ResponseEntity<BookingResponse> response = restTemplate.exchange(
+            "/api/bookings/" + created.id(), HttpMethod.PUT, entity, BookingResponse.class);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+    }
+
+    // --- DELETE /api/bookings/{id} ---
+
+    @Test
+    void cancelBooking_asAdmin_shouldReturn204()
+    {
+        BookingResponse created = createTestBooking(50);
+
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+        ResponseEntity<Void> response = restTemplate.exchange(
+            "/api/bookings/" + created.id(), HttpMethod.DELETE, entity, Void.class);
+
+        assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
+    }
+}
+```
+
+#### UserControllerTest
+
+Complete `src/test/java/com/booking_api/controller/UserControllerTest.java`:
+
+```java
+package com.booking_api.controller;
+
+import com.booking_api.dto.UserRequest;
+import com.booking_api.dto.UserResponse;
+import com.booking_api.testutil.IntegrationTestBase;
+import com.booking_api.testutil.TestDataFactory;
+import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class UserControllerTest extends IntegrationTestBase
+{
+    private int emailCounter = 0;
+
+    private UserResponse createTestUser()
+    {
+        emailCounter++;
+        HttpHeaders headers = adminHeaders();
+        UserRequest request = TestDataFactory.createUserRequest(
+            "testuser" + emailCounter + "@test.com", "password123", "USER");
+        HttpEntity<UserRequest> entity = new HttpEntity<>(request, headers);
+
+        ResponseEntity<UserResponse> response = restTemplate.exchange(
+            "/api/users", HttpMethod.POST, entity, UserResponse.class);
+        assertNotNull(response.getBody());
+        return response.getBody();
+    }
+
+    // --- security ---
+
+    @Test
+    void getAllUsers_withoutAuth_shouldReturn401()
+    {
+        ResponseEntity<String> response = restTemplate.getForEntity(
+            "/api/users", String.class);
+        assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
+    }
+
+    @Test
+    void createUser_withoutAuth_shouldReturn401()
+    {
+        UserRequest request = TestDataFactory.createUserRequest(
+            "someone@test.com", "password123", "USER");
+        HttpEntity<UserRequest> entity = new HttpEntity<>(request);
+
+        ResponseEntity<String> response = restTemplate.exchange(
+            "/api/users", HttpMethod.POST, entity, String.class);
+
+        assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
+    }
+
+    // --- GET /api/users ---
+
+    @Test
+    void getAllUsers_asAdmin_shouldReturn200()
+    {
+        HttpEntity<Void> entity = new HttpEntity<>(adminHeaders());
+
+        ResponseEntity<String> response = restTemplate.exchange(
+            "/api/users", HttpMethod.GET, entity, String.class);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+    }
+
+    // --- GET /api/users/{id} ---
+
+    @Test
+    void getUserById_asAdmin_shouldReturn200()
+    {
+        UserResponse created = createTestUser();
+
+        HttpEntity<Void> entity = new HttpEntity<>(adminHeaders());
+        ResponseEntity<UserResponse> response = restTemplate.exchange(
+            "/api/users/" + created.id(), HttpMethod.GET, entity, UserResponse.class);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(created.email(), response.getBody().email());
+    }
+
+    // --- POST /api/users ---
+
+    @Test
+    void createUser_asAdmin_shouldReturn201()
+    {
+        UserRequest request = TestDataFactory.createUserRequest(
+            "newuser@test.com", "password123", "USER");
+        HttpEntity<UserRequest> entity = new HttpEntity<>(request, adminHeaders());
+
+        ResponseEntity<UserResponse> response = restTemplate.exchange(
+            "/api/users", HttpMethod.POST, entity, UserResponse.class);
+
+        assertEquals(HttpStatus.CREATED, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals("newuser@test.com", response.getBody().email());
+        assertEquals("USER", response.getBody().role());
+    }
+
+    @Test
+    void createUser_withInvalidEmail_shouldReturn400()
+    {
+        UserRequest request = TestDataFactory.createUserRequest(
+            "not-an-email", "password123", "USER");
+        HttpEntity<UserRequest> entity = new HttpEntity<>(request, adminHeaders());
+
+        ResponseEntity<String> response = restTemplate.exchange(
+            "/api/users", HttpMethod.POST, entity, String.class);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+    }
+
+    // --- PUT /api/users/{id} ---
+
+    @Test
+    void updateUser_asAdmin_shouldReturn200()
+    {
+        UserResponse created = createTestUser();
+
+        UserRequest updateRequest = TestDataFactory.createUserRequest(
+            "updated@test.com", "newpassword", "ADMIN");
+        HttpEntity<UserRequest> entity = new HttpEntity<>(updateRequest, adminHeaders());
+
+        ResponseEntity<UserResponse> response = restTemplate.exchange(
+            "/api/users/" + created.id(), HttpMethod.PUT, entity, UserResponse.class);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals("updated@test.com", response.getBody().email());
+        assertEquals("ADMIN", response.getBody().role());
+    }
+
+    // --- DELETE /api/users/{id} ---
+
+    @Test
+    void deleteUser_asAdmin_shouldReturn204()
+    {
+        UserResponse created = createTestUser();
+
+        HttpEntity<Void> entity = new HttpEntity<>(adminHeaders());
+        ResponseEntity<Void> response = restTemplate.exchange(
+            "/api/users/" + created.id(), HttpMethod.DELETE, entity, Void.class);
+
+        assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
+    }
+}
+```
+
+### Test File Summary
+
+| File | Type | Tests | What It Covers |
+|------|------|-------|----------------|
+| `testutil/TestDataFactory.java` | Utility | -- | Reusable factory methods for test objects |
+| `testutil/IntegrationTestBase.java` | Base class | -- | Shared login, auth headers, TestRestTemplate |
+| `service/BookingServiceTest.java` | Unit | 17 | All 7 public methods: happy paths, validation, conflict, not-found, ownership |
+| `service/RoomServiceTest.java` | Unit | 8 | All 5 public methods: happy paths, not-found for get/update/delete |
+| `service/UserServiceTest.java` | Unit | 9 | All 5 public methods: happy paths, not-found, role parsing |
+| `repository/BookingRepositoryTest.java` | Integration | 6 | Both JPQL queries including excluding variant, status-aware conflict detection |
+| `controller/RoomControllerTest.java` | Integration | 8 | All 5 endpoints: GET, GET/{id}, POST, PUT, DELETE + auth + validation |
+| `controller/BookingControllerTest.java` | Integration | 8 | All 6 endpoints: GET, GET/my, GET/{id}, POST, PUT, DELETE + conflict 409 |
+| `controller/UserControllerTest.java` | Integration | 8 | All 5 endpoints: GET, GET/{id}, POST, PUT, DELETE + auth + validation |
+
+**Total: 64 tests** across 7 test classes, supported by 2 shared utility classes.
+
+Every public service method now has at least a happy-path test and its primary error-path test. Every controller endpoint has an integration test verifying the HTTP status code and response body. The `findConflictingBookingsExcluding` repository query is tested alongside the original `findConflictingBookings` query.
 
 ### Git Checkpoint
 
 ```
 git add -A
-git commit -m "test: add unit and integration tests for services, repositories, and controllers"
+git commit -m "test: add comprehensive unit and integration tests with test factories"
 ```
 
 ---

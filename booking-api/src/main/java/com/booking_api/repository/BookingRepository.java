@@ -20,6 +20,7 @@ public interface BookingRepository extends JpaRepository<Booking, Long>
         WHERE b.room.id = :roomId
         AND b.startTime < :endTime
         AND b.endTime > :startTime
+        AND b.status <> com.booking_api.model.Status.CANCELLED
         """)
     List<Booking> findConflictingBookings(
             @Param("roomId") Long roomId,

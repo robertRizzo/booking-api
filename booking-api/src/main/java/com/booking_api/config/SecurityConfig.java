@@ -17,6 +17,8 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 
 import com.booking_api.service.CustomUserDetailsService;
 
+import jakarta.servlet.http.HttpServletResponse;
+
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
@@ -43,6 +45,14 @@ public class SecurityConfig
                 .requestMatchers("/actuator/health").permitAll()
                 .anyRequest().authenticated()
             )
+                .exceptionHandling(ex -> ex
+            .authenticationEntryPoint((request, response, authException) -> {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.setContentType("application/json");
+            response.getWriter().write(
+                "{\"status\":401,\"message\":\"Unauthorized\"}");
+            })
+        )
             .authenticationProvider(authenticationProvider())
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 
