@@ -1,0 +1,7 @@
+spring:
+  jpa:
+    show-sql: true
+
+jwt:
+  secret: dev-only-secret-not-for-production
+  expiration: 86400000

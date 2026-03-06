@@ -57,6 +57,7 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/bookingdb
       SPRING_DATASOURCE_USERNAME: postgres
       SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_PROFILES_ACTIVE: prod
       JWT_SECRET: ${JWT_SECRET:-default-dev-secret-change-in-production}
     depends_on:
       postgres:

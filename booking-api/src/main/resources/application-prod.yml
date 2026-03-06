@@ -1,0 +1,17 @@
+spring:
+  jpa:
+    show-sql: false
+  datasource:
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+
+jwt:
+  secret: ${JWT_SECRET}
+  expiration: 3600000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
