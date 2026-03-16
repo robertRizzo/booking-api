@@ -34,7 +34,7 @@ services:
     # 5432 är standard PostgrSQL port
     # Detta gör att Spring Boot kan ansluta via localhost
     ports:
-      - "5432:5432"
+      - "5433:5432"
 
     # Volumes = persistent storage
     # Viktigt så att datan inte försvinner när container stoppas

@@ -4,7 +4,6 @@ import java.util.List;
 
 import org.springframework.stereotype.Service;
 
-import com.booking_api.dto.BookingResponse;
 import com.booking_api.dto.UserRequest;
 import com.booking_api.dto.UserResponse;
 import com.booking_api.exception.ResourceNotFoundException;
