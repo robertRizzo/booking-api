@@ -6,19 +6,29 @@ import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
+import AppLayout from "./components/AppLayout";
+import DashboardPage from "./pages/DashboardPage";
+import RoomsPage from "./pages/RoomsPage";
+import BookingsPage from "./pages/BookingsPage";
+import UsersPage from "./pages/UsersPage";
 
 const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
   { path: "/register", element: <RegisterPage /> },
   {
-    path: "/dashboard",
-    element: (
-      <ProtectedRoute>
-        <div>Dashboard (coming in Phase 7)</div>
-      </ProtectedRoute>
-    ),
+    element:<ProtectedRoute><AppLayout/></ProtectedRoute>,
+    children: [
+      { path: "/dashboard", element: <DashboardPage /> },
+      { path: "/rooms", element: <RoomsPage /> },
+      { path: "/bookings", element: <BookingsPage /> },
+      {
+        path: "/users",
+        element: <ProtectedRoute requireAdmin><UsersPage /> </ProtectedRoute>
+      },
+      ],
   },
-  { path: "*", element: <Navigate to="/login" /> },
+  { path: "*", element: <Navigate to="/login" /> }
+  
 ]);
 
 export default function App() {

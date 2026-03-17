@@ -7,6 +7,7 @@ import type { AuthRequest, RegisterRequest } from "../types";
 interface AuthUser {
   email: string;
   role: string;
+  userId: number;
   token: string;
 }
 
@@ -32,6 +33,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUser({
             email: payload.sub,
             role: payload.role,   // requires Option A above
+            userId: payload.userId,
             token,
           });
         } else {
@@ -47,7 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const response = await loginUser(data);
     localStorage.setItem("token", response.token);
     const payload = decodeToken(response.token);
-    setUser({ email: payload.sub, role: payload.role, token: response.token });
+    setUser({ email: payload.sub, role: payload.role, userId: payload.userId, token: response.token });
   }
 
   async function register(data: RegisterRequest) {

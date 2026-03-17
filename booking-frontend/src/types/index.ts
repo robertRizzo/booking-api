@@ -27,7 +27,7 @@ export interface UserRequest
 export interface UserResponse
 {
     id: number;
-    email: String;
+    email: string;
     role: string;
 }
 

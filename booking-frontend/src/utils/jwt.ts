@@ -2,6 +2,7 @@ interface JwtPayload
 {
     sub: string; // email
     role: string;
+    userId: number;
     iat: number;
     exp: number;
 }
