@@ -674,6 +674,72 @@ const router = createBrowserRouter([
 
 The outer `ProtectedRoute` ensures authentication. The nested `ProtectedRoute requireAdmin` on `/users` adds the admin check. All child routes share the same AppLayout (sidebar + header). The pathless parent route acts as a layout route — it matches whenever any of its children match.
 
+### Step 3 — Create placeholder pages
+
+The routing from Step 2 imports four page components that don't exist yet. Create stub versions now so the app compiles. Each page will be fleshed out in later phases.
+
+Create `src/pages/DashboardPage.tsx`:
+
+```typescript
+import { Title, Text, Container } from "@mantine/core";
+
+export default function DashboardPage() {
+  return (
+    <Container>
+      <Title order={2}>Dashboard</Title>
+      <Text c="dimmed" mt="sm">Welcome to BookingAPI. Select a page from the sidebar.</Text>
+    </Container>
+  );
+}
+```
+
+Create `src/pages/RoomsPage.tsx`:
+
+```typescript
+import { Title, Text, Container } from "@mantine/core";
+
+export default function RoomsPage() {
+  return (
+    <Container>
+      <Title order={2}>Rooms</Title>
+      <Text c="dimmed" mt="sm">Room management coming soon.</Text>
+    </Container>
+  );
+}
+```
+
+Create `src/pages/BookingsPage.tsx`:
+
+```typescript
+import { Title, Text, Container } from "@mantine/core";
+
+export default function BookingsPage() {
+  return (
+    <Container>
+      <Title order={2}>Bookings</Title>
+      <Text c="dimmed" mt="sm">Booking management coming soon.</Text>
+    </Container>
+  );
+}
+```
+
+Create `src/pages/UsersPage.tsx`:
+
+```typescript
+import { Title, Text, Container } from "@mantine/core";
+
+export default function UsersPage() {
+  return (
+    <Container>
+      <Title order={2}>Users</Title>
+      <Text c="dimmed" mt="sm">User management coming soon.</Text>
+    </Container>
+  );
+}
+```
+
+Each placeholder uses Mantine's `Container`, `Title`, and `Text` so the pages feel consistent with the rest of the app. Later phases will replace these stubs with full implementations — Phase 4 builds out RoomsPage, Phase 5 builds BookingsPage, Phase 6 builds UsersPage, and Phase 7 builds DashboardPage.
+
 ### Git Checkpoint
 
 ```
