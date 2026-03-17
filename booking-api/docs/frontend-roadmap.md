@@ -674,7 +674,7 @@ const router = createBrowserRouter([
 
 The outer `ProtectedRoute` ensures authentication. The nested `ProtectedRoute requireAdmin` on `/users` adds the admin check. All child routes share the same AppLayout (sidebar + header). The pathless parent route acts as a layout route — it matches whenever any of its children match.
 
-### Step 3 — Create placeholder pages
+Dash### Step 3 — Create placeholder pages
 
 The routing from Step 2 imports four page components that don't exist yet. Create stub versions now so the app compiles. Each page will be fleshed out in later phases.
 
@@ -794,25 +794,254 @@ This pattern — one file per resource, one function per endpoint — keeps the 
 
 ### Step 2 — Build RoomsPage
 
-Create `src/pages/RoomsPage.tsx`:
+Create `src/pages/RoomsPage.tsx`. This is the final version of the page — it imports `RoomForm` (Step 3) and `ConfirmModal` (Step 4), so the app won't compile until those components exist. Build them next, then come back and verify everything works together.
 
-- On mount (`useEffect`), call `getRooms()` and store the result in state
-- Display a `Table` with columns: Name, Capacity, Actions
-- If the user is admin, show a "Create Room" button at the top and Edit/Delete buttons per row
-- If the user is USER, show the table without action buttons
-- Use a loading state to show a spinner while rooms load
-- Use an empty state if no rooms exist
+```typescript
+import { useState, useEffect } from "react";
+import {
+  Container,
+  Title,
+  Table,
+  Button,
+  Group,
+  Loader,
+  Text,
+  Modal,
+} from "@mantine/core";
+import { useAuth } from "../context/AuthContext";
+import { getRooms, createRoom, updateRoom, deleteRoom } from "../api/rooms";
+import { RoomResponse, RoomRequest } from "../types";
+import RoomForm from "../components/RoomForm";
+import ConfirmModal from "../components/ConfirmModal";
+
+export default function RoomsPage() {
+  const { isAdmin } = useAuth();
+  const [rooms, setRooms] = useState<RoomResponse[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [formOpened, setFormOpened] = useState(false);
+  const [editingRoom, setEditingRoom] = useState<RoomResponse | null>(null);
+  const [formLoading, setFormLoading] = useState(false);
+
+  const [deleteTarget, setDeleteTarget] = useState<RoomResponse | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
+  useEffect(() => {
+    loadRooms();
+  }, []);
+
+  async function loadRooms() {
+    try {
+      const data = await getRooms();
+      setRooms(data);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openCreate() {
+    setEditingRoom(null);
+    setFormOpened(true);
+  }
+
+  function openEdit(room: RoomResponse) {
+    setEditingRoom(room);
+    setFormOpened(true);
+  }
+
+  async function handleFormSubmit(data: RoomRequest) {
+    setFormLoading(true);
+    try {
+      if (editingRoom) {
+        const updated = await updateRoom(editingRoom.id, data);
+        setRooms((prev) =>
+          prev.map((r) => (r.id === updated.id ? updated : r))
+        );
+      } else {
+        const created = await createRoom(data);
+        setRooms((prev) => [...prev, created]);
+      }
+      setFormOpened(false);
+    } finally {
+      setFormLoading(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    setDeleteLoading(true);
+    try {
+      await deleteRoom(deleteTarget.id);
+      setRooms((prev) => prev.filter((r) => r.id !== deleteTarget.id));
+      setDeleteTarget(null);
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <Container>
+        <Loader mt="xl" />
+      </Container>
+    );
+  }
+
+  return (
+    <Container>
+      <Group justify="space-between" mb="md">
+        <Title order={2}>Rooms</Title>
+        {isAdmin && <Button onClick={openCreate}>Create Room</Button>}
+      </Group>
+
+      {rooms.length === 0 ? (
+        <Text c="dimmed">No rooms found.</Text>
+      ) : (
+        <Table striped highlightOnHover>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Name</Table.Th>
+              <Table.Th>Capacity</Table.Th>
+              {isAdmin && <Table.Th>Actions</Table.Th>}
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {rooms.map((room) => (
+              <Table.Tr key={room.id}>
+                <Table.Td>{room.name}</Table.Td>
+                <Table.Td>{room.capacity}</Table.Td>
+                {isAdmin && (
+                  <Table.Td>
+                    <Group gap="xs">
+                      <Button
+                        size="xs"
+                        variant="light"
+                        onClick={() => openEdit(room)}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="light"
+                        color="red"
+                        onClick={() => setDeleteTarget(room)}
+                      >
+                        Delete
+                      </Button>
+                    </Group>
+                  </Table.Td>
+                )}
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      )}
+
+      <Modal
+        opened={formOpened}
+        onClose={() => setFormOpened(false)}
+        title={editingRoom ? "Edit Room" : "Create Room"}
+      >
+        <RoomForm
+          initialValues={
+            editingRoom
+              ? { name: editingRoom.name, capacity: editingRoom.capacity }
+              : undefined
+          }
+          onSubmit={handleFormSubmit}
+          loading={formLoading}
+        />
+      </Modal>
+
+      <ConfirmModal
+        opened={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDelete}
+        title="Delete Room"
+        message={`Are you sure you want to delete "${deleteTarget?.name}"?`}
+        loading={deleteLoading}
+      />
+    </Container>
+  );
+}
+```
+
+Key patterns in this page:
+
+- **Optimistic local state** — after a successful create, update, or delete, the local `rooms` array is patched in place rather than re-fetching the full list. This keeps the UI snappy.
+- **Two modals, one page** — the form modal handles both create and edit (distinguished by whether `editingRoom` is set). The confirm modal handles delete. Both are controlled via simple state variables.
+- **Role-aware rendering** — the Create button, Actions column header, and per-row Edit/Delete buttons are all wrapped in `{isAdmin && ...}` so regular users see a clean read-only table.
 
 ### Step 3 — Build a Room form component
 
 Create `src/components/RoomForm.tsx`:
 
-- A reusable form with `TextInput` for name and `NumberInput` for capacity
-- Accept optional initial values via props (for editing)
-- Accept an `onSubmit` callback prop
-- Validate that name is not empty and capacity is at least 1
+```typescript
+import { useState } from "react";
+import { TextInput, NumberInput, Button, Stack } from "@mantine/core";
+import { RoomRequest } from "../types";
 
-This form is used by both the "Create Room" and "Edit Room" flows. The page component decides whether to call `createRoom()` or `updateRoom()`.
+interface Props {
+  initialValues?: RoomRequest;
+  onSubmit: (data: RoomRequest) => void;
+  loading?: boolean;
+}
+
+export default function RoomForm({ initialValues, onSubmit, loading }: Props) {
+  const [name, setName] = useState(initialValues?.name || "");
+  const [capacity, setCapacity] = useState<number>(
+    initialValues?.capacity || 1
+  );
+  const [errors, setErrors] = useState<{ name?: string; capacity?: string }>(
+    {}
+  );
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const newErrors: { name?: string; capacity?: string } = {};
+    if (!name.trim()) newErrors.name = "Name is required";
+    if (capacity < 1) newErrors.capacity = "Capacity must be at least 1";
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+    setErrors({});
+    onSubmit({ name: name.trim(), capacity });
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <Stack>
+        <TextInput
+          label="Name"
+          placeholder="Conference Room A"
+          value={name}
+          onChange={(e) => setName(e.currentTarget.value)}
+          error={errors.name}
+        />
+        <NumberInput
+          label="Capacity"
+          placeholder="10"
+          min={1}
+          value={capacity}
+          onChange={(val) => setCapacity(typeof val === "number" ? val : 1)}
+          error={errors.capacity}
+        />
+        <Button type="submit" loading={loading}>
+          {initialValues ? "Update" : "Create"}
+        </Button>
+      </Stack>
+    </form>
+  );
+}
+```
+
+This form is used by both the "Create Room" and "Edit Room" flows. The parent component (RoomsPage) decides whether to call `createRoom()` or `updateRoom()` inside the `onSubmit` callback it passes in.
+
+Key details:
+- The button label switches between "Create" and "Update" based on whether `initialValues` was provided
+- `NumberInput`'s `onChange` can return `number | string` — the type guard `typeof val === "number"` handles this safely
+- Validation runs inline before calling `onSubmit`, using Mantine's `error` prop to display messages below each field
 
 ### Step 4 — Build the ConfirmModal component
 
@@ -847,11 +1076,14 @@ This component is reusable — it will be used for deleting rooms, bookings, and
 
 ### Step 5 — Wire up delete
 
-When the admin clicks "Delete" on a room row:
-1. Open the ConfirmModal
-2. On confirm, call `deleteRoom(id)`
-3. On success, remove the room from the local state list (or re-fetch)
-4. Close the modal
+The delete flow is already integrated into the RoomsPage from Step 2. Here's how the pieces connect:
+
+1. Each row's Delete button sets the target: `onClick={() => setDeleteTarget(room)}`
+2. `ConfirmModal` opens when `deleteTarget` is not null: `opened={!!deleteTarget}`
+3. On confirm, `handleDelete()` calls `deleteRoom(deleteTarget.id)`, then removes the room from local state with `filter`
+4. On close or after deletion, `setDeleteTarget(null)` closes the modal
+
+If you want to verify this flow in isolation, try adding a room as admin, confirming it appears in the table, then deleting it and confirming the row disappears without a page reload.
 
 ### Git Checkpoint
 
