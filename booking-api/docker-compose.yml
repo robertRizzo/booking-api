@@ -2,7 +2,6 @@
 
 # Definierar alla tjänster (containers) som ska köras
 services:
-  
   # PostgreSQL databas container
   postgres:
     # Vilken image som ska användas från Docker Hub
@@ -63,6 +62,15 @@ services:
       postgres:
         condition: service_healthy
 
+  frontend:
+    build: ../booking-frontend
+    container_name: booking-frontend
+    restart: always
+    ports:
+      - "3000:80"
+    depends_on:
+      - app
+  
 # Deifinierar namngivna volumes
 # (Annars skapas de temporärt)
 volumes:
