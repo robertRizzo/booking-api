@@ -2018,54 +2018,270 @@ Key behaviors:
 - **409** — Booking conflicts: these are handled locally in the booking form (see Phase 5), not globally.
 - **Other errors** — Individual components catch these in try/catch blocks.
 
-### Step 2 — Add loading states
+### Step 2 — Add loading and error states
 
-Every page that fetches data should follow this pattern:
+The pages from earlier phases already have a basic loading check (`if (loading) return <Loader />`), but they silently swallow fetch errors. This step adds a reusable error component and upgrades every page to handle both loading and error states cleanly.
 
-```typescript
-const [loading, setLoading] = useState(true);
-const [data, setData] = useState<DataType[]>([]);
-
-useEffect(() => {
-  fetchData()
-    .then(setData)
-    .catch(() => { /* error handled by interceptor or local catch */ })
-    .finally(() => setLoading(false));
-}, []);
-
-if (loading) return <LoadingOverlay visible />;
-```
-
-Mantine provides `LoadingOverlay` and `Skeleton` components.
-
-### Step 3 — Add empty states
-
-When a list is loaded but empty, show a friendly message instead of a blank table:
+Create `src/components/ErrorAlert.tsx`:
 
 ```typescript
-if (rooms.length === 0) {
+import { Alert, Button } from "@mantine/core";
+
+interface Props {
+  message: string;
+  onRetry?: () => void;
+}
+
+export default function ErrorAlert({ message, onRetry }: Props) {
   return (
-    <Center h={300}>
-      <Stack align="center">
-        <Text size="lg" c="dimmed">No rooms found</Text>
-        {isAdmin && <Button onClick={() => navigate("/rooms/create")}>Create first room</Button>}
-      </Stack>
-    </Center>
+    <Alert color="red" title="Something went wrong" mb="md">
+      {message}
+      {onRetry && (
+        <Button variant="light" color="red" size="xs" mt="sm" onClick={onRetry}>
+          Try again
+        </Button>
+      )}
+    </Alert>
   );
 }
 ```
 
+Now update each page's load function and render to include an error state. Here's the pattern, using RoomsPage as the example:
+
+```typescript
+import { Center, Loader } from "@mantine/core";
+import ErrorAlert from "../components/ErrorAlert";
+
+// Add error state alongside loading
+const [loading, setLoading] = useState(true);
+const [error, setError] = useState("");
+
+async function loadRooms() {
+  setLoading(true);
+  setError("");
+  try {
+    const data = await getRooms();
+    setRooms(data);
+  } catch {
+    setError("Failed to load rooms. Please try again.");
+  } finally {
+    setLoading(false);
+  }
+}
+
+// In the render, before the main return:
+if (loading) {
+  return (
+    <Center h="60vh">
+      <Loader size="lg" />
+    </Center>
+  );
+}
+
+if (error) {
+  return (
+    <Container>
+      <ErrorAlert message={error} onRetry={loadRooms} />
+    </Container>
+  );
+}
+```
+
+Apply the same pattern to all data-fetching pages:
+- `RoomsPage` — wrap `loadRooms` with error handling
+- `BookingsPage` — wrap `loadData` with error handling
+- `UsersPage` — wrap `loadUsers` with error handling
+- `DashboardPage` — wrap the `loadData` inside `useEffect` with error handling
+
+The key improvement is the **retry button** — instead of forcing a full page reload on error, `onRetry` re-runs the fetch function. The `Center` with `h="60vh"` vertically centers the loader for a more polished feel than a top-left spinner.
+
+### Step 3 — Upgrade empty states
+
+The pages from earlier phases show a simple `<Text c="dimmed">No rooms found.</Text>` when lists are empty. This step upgrades those to centered layouts with context-specific messages and call-to-action buttons.
+
+Update the empty-state block in **RoomsPage**:
+
+```typescript
+import { Center, Stack } from "@mantine/core";
+
+// Replace the existing {rooms.length === 0 ? (...) block:
+{rooms.length === 0 ? (
+  <Center h={300}>
+    <Stack align="center" gap="sm">
+      <Text size="lg" c="dimmed">No rooms yet</Text>
+      {isAdmin && (
+        <Button variant="light" onClick={openCreate}>
+          Create your first room
+        </Button>
+      )}
+    </Stack>
+  </Center>
+) : (
+  // ... existing Table ...
+)}
+```
+
+Update the empty-state block in **BookingsPage**:
+
+```typescript
+{bookings.length === 0 ? (
+  <Center h={300}>
+    <Stack align="center" gap="sm">
+      <Text size="lg" c="dimmed">No bookings yet</Text>
+      <Button variant="light" onClick={openCreate}>
+        Create your first booking
+      </Button>
+    </Stack>
+  </Center>
+) : (
+  // ... existing Table ...
+)}
+```
+
+Update the empty-state block in **UsersPage**:
+
+```typescript
+{users.length === 0 ? (
+  <Center h={300}>
+    <Stack align="center" gap="sm">
+      <Text size="lg" c="dimmed">No users found</Text>
+      <Button variant="light" onClick={openCreate}>
+        Create a user
+      </Button>
+    </Stack>
+  </Center>
+) : (
+  // ... existing Table ...
+)}
+```
+
+The pattern is the same everywhere: `Center` with a fixed height gives vertical breathing room, `Stack` aligns the message and button, and the CTA uses `variant="light"` to feel secondary rather than demanding. Each CTA reuses the existing `openCreate` function — no new logic needed.
+
 ### Step 4 — Add form validation feedback
 
-Mirror the backend's validation rules on the frontend for instant feedback:
+Mirror the backend's validation rules on the frontend for instant feedback. `RoomForm` and `UserForm` already validate their fields (from Phases 4 and 6). This step adds validation to the auth pages and the booking create modal.
 
-- Email: must match email format
-- Password: minimum 6 characters
-- Room name: required
-- Room capacity: minimum 1
-- Booking times: must be in the future, start must be before end
+#### Update LoginPage
 
-Use Mantine's `error` prop on form inputs to display validation messages inline.
+Add inline validation before submitting. Update the `handleSubmit` function in `src/pages/LoginPage.tsx`:
+
+```typescript
+const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+
+async function handleSubmit(e: React.FormEvent) {
+  e.preventDefault();
+  const newErrors: { email?: string; password?: string } = {};
+  if (!email.trim()) {
+    newErrors.email = "Email is required";
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    newErrors.email = "Invalid email format";
+  }
+  if (!password) {
+    newErrors.password = "Password is required";
+  } else if (password.length < 6) {
+    newErrors.password = "Password must be at least 6 characters";
+  }
+  if (Object.keys(newErrors).length > 0) {
+    setErrors(newErrors);
+    return;
+  }
+  setErrors({});
+  setError("");
+  setLoading(true);
+  try {
+    await login({ email, password });
+    navigate("/dashboard");
+  } catch (err: unknown) {
+    if (isAxiosError(err)) {
+      setError(err.response?.data?.message || "Login failed");
+    } else {
+      setError("Login failed");
+    }
+  } finally {
+    setLoading(false);
+  }
+}
+```
+
+Then wire the `error` prop on each input:
+
+```typescript
+<TextInput
+  label="Email"
+  value={email}
+  onChange={(e) => setEmail(e.currentTarget.value)}
+  error={errors.email}
+/>
+<PasswordInput
+  label="Password"
+  value={password}
+  onChange={(e) => setPassword(e.currentTarget.value)}
+  error={errors.password}
+/>
+```
+
+Apply the same pattern to **RegisterPage** — the validation rules are identical.
+
+#### Update the booking create modal
+
+Add time validation to `handleCreate` in `src/pages/BookingsPage.tsx`. Insert these checks before the API call:
+
+```typescript
+async function handleCreate() {
+  if (!selectedRoomId || !startTime || !endTime) return;
+
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+
+  if (start <= new Date()) {
+    setCreateError("Start time must be in the future");
+    return;
+  }
+  if (end <= start) {
+    setCreateError("End time must be after start time");
+    return;
+  }
+
+  setCreateLoading(true);
+  setCreateError("");
+  try {
+    const created = await createBooking({
+      userId: user!.userId,
+      roomId: Number(selectedRoomId),
+      startTime: startTime,
+      endTime: endTime,
+    });
+    setBookings((prev) => [...prev, created]);
+    setCreateOpened(false);
+  } catch (err: unknown) {
+    if (isAxiosError(err) && err.response?.status === 409) {
+      setCreateError(err.response.data.message);
+    } else {
+      setCreateError("Failed to create booking");
+    }
+  } finally {
+    setCreateLoading(false);
+  }
+}
+```
+
+The time checks run before the API call, giving the user instant feedback without a round-trip. The backend has the same validation, so this is a convenience layer — never rely solely on client-side validation.
+
+#### Summary of all validation rules
+
+| Form | Field | Rule | Already done? |
+|------|-------|------|--------------|
+| LoginPage | email | Required, email format | This step |
+| LoginPage | password | Required, min 6 chars | This step |
+| RegisterPage | email | Required, email format | This step |
+| RegisterPage | password | Required, min 6 chars | This step |
+| RoomForm | name | Required | Phase 4 |
+| RoomForm | capacity | Min 1 | Phase 4 |
+| UserForm | email | Required | Phase 6 |
+| UserForm | password | Min 6 chars (new users only) | Phase 6 |
+| Booking modal | room | Required (disabled button) | Phase 5 |
+| Booking modal | startTime | Required, must be future | This step |
+| Booking modal | endTime | Required, must be after start | This step |
 
 ### Git Checkpoint
 

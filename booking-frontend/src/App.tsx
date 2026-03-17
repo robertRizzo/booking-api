@@ -2,6 +2,7 @@ import { createBrowserRouter, RouterProvider, Navigate } from "react-router-dom"
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "@mantine/dates/styles.css";
+import { Notifications } from "@mantine/notifications";
 import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import LoginPage from "./pages/LoginPage";
@@ -34,9 +35,11 @@ const router = createBrowserRouter([
 export default function App() {
   return (
     <MantineProvider>
-      <AuthProvider>
-        <RouterProvider router={router} />
-      </AuthProvider>
+      <Notifications>
+        <AuthProvider>
+          <RouterProvider router={router} />
+        </AuthProvider>
+      </Notifications>
     </MantineProvider>
   );
 }
