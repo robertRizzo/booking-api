@@ -25,11 +25,12 @@ public class JwtService
         this.jwtProperties = jwtProperties;
     }
 
-    public String generateToken(UserDetails userDetails)
+    public String generateToken(UserDetails userDetails, Long userId)
     {
         return Jwts.builder()
             .subject(userDetails.getUsername())
             .claim("role", userDetails.getAuthorities().iterator().next().getAuthority())
+            .claim("userId", userId)
             .issuedAt(new Date())
             .expiration(new Date(System.currentTimeMillis() + jwtProperties.expiration()))
             .signWith(getSigningKey())

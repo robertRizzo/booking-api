@@ -54,7 +54,10 @@ public class AuthController
         );
 
         UserDetails userDetails = userDetailsService.loadUserByUsername(request.email());
-        String token = jwtService.generateToken(userDetails);
+        Long userId = userRepository.findByEmail(request.email())
+            .orElseThrow(() -> new RuntimeException("User not found"))
+            .getId(); 
+        String token = jwtService.generateToken(userDetails, userId);
 
         return ResponseEntity.ok(new AuthResponse(token));
     }

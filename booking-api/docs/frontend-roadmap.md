@@ -1142,14 +1142,315 @@ export async function cancelBooking(id: number): Promise<void> {
 
 ### Step 2 — Build BookingsPage
 
-Create `src/pages/BookingsPage.tsx`:
+#### Prerequisite — Add userId to the JWT
 
-- On mount, fetch bookings based on the user's role:
-  - Admin: `getAllBookings()`
-  - User: `getMyBookings()`
-- Display a table with columns: Room, Start Time, End Time, Status, Actions
-- Format dates using `dayjs` for readability (e.g., "Apr 1, 2026 10:00")
-- Show a cancel button per booking (only for CONFIRMED bookings)
+The create booking form needs the current user's numeric ID (the backend's `BookingRequest` requires `userId`). The JWT already carries `role` (from Phase 2 Step 3) — now add `userId` the same way.
+
+**Backend** — Update `AuthController.login()` to look up the user entity and pass the ID to a modified `generateToken`:
+
+```java
+// AuthController.java — login method
+@PostMapping("/login")
+public ResponseEntity<AuthResponse> login(@Valid @RequestBody AuthRequest request)
+{
+    authenticationManager.authenticate(
+        new UsernamePasswordAuthenticationToken(request.email(), request.password())
+    );
+
+    UserDetails userDetails = userDetailsService.loadUserByUsername(request.email());
+    Long userId = userRepository.findByEmail(request.email())
+        .orElseThrow(() -> new RuntimeException("User not found"))
+        .getId();
+    String token = jwtService.generateToken(userDetails, userId);
+
+    return ResponseEntity.ok(new AuthResponse(token));
+}
+```
+
+```java
+// JwtService.java — updated generateToken
+public String generateToken(UserDetails userDetails, Long userId)
+{
+    return Jwts.builder()
+        .subject(userDetails.getUsername())
+        .claim("role", userDetails.getAuthorities().iterator().next().getAuthority())
+        .claim("userId", userId)
+        .issuedAt(new Date())
+        .expiration(new Date(System.currentTimeMillis() + jwtProperties.expiration()))
+        .signWith(getSigningKey())
+        .compact();
+}
+```
+
+**Frontend** — Update the JWT payload interface and auth context to include `userId`:
+
+In `src/utils/jwt.ts`, add `userId` to the interface:
+
+```typescript
+interface JwtPayload {
+  sub: string;
+  role: string;
+  userId: number;
+  iat: number;
+  exp: number;
+}
+```
+
+In `src/context/AuthContext.tsx`, add `userId` to `AuthUser` and populate it wherever the user is set:
+
+```typescript
+interface AuthUser {
+  userId: number;
+  email: string;
+  role: string;
+  token: string;
+}
+```
+
+Update the three places where `setUser` is called — the `useEffect` token restore, and the `login` function — to include `userId: payload.userId`.
+
+#### BookingsPage code
+
+Create `src/pages/BookingsPage.tsx`. This is the final version — it includes the create booking modal (Step 4) and cancel flow. It imports `StatusBadge` (Step 3) and `ConfirmModal` (Phase 4 Step 4), so build those first if you haven't already.
+
+```typescript
+import { useState, useEffect } from "react";
+import {
+  Container,
+  Title,
+  Table,
+  Button,
+  Group,
+  Loader,
+  Text,
+  Modal,
+  Select,
+  Stack,
+  Alert,
+} from "@mantine/core";
+import { DateTimePicker } from "@mantine/dates";
+import { isAxiosError } from "axios";
+import dayjs from "dayjs";
+import { useAuth } from "../context/AuthContext";
+import {
+  getAllBookings,
+  getMyBookings,
+  createBooking,
+  cancelBooking,
+} from "../api/bookings";
+import { getRooms } from "../api/rooms";
+import { BookingResponse, RoomResponse } from "../types";
+import StatusBadge from "../components/StatusBadge";
+import ConfirmModal from "../components/ConfirmModal";
+
+export default function BookingsPage() {
+  const { isAdmin, user } = useAuth();
+  const [bookings, setBookings] = useState<BookingResponse[]>([]);
+  const [rooms, setRooms] = useState<RoomResponse[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [createOpened, setCreateOpened] = useState(false);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [startTime, setStartTime] = useState<string | null>(null);
+  const [endTime, setEndTime] = useState<string | null>(null);
+  const [createLoading, setCreateLoading] = useState(false);
+  const [createError, setCreateError] = useState("");
+
+  const [cancelTarget, setCancelTarget] = useState<BookingResponse | null>(
+    null
+  );
+  const [cancelLoading, setCancelLoading] = useState(false);
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  async function loadData() {
+    try {
+      const [bookingData, roomData] = await Promise.all([
+        isAdmin ? getAllBookings() : getMyBookings(),
+        getRooms(),
+      ]);
+      setBookings(bookingData);
+      setRooms(roomData);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openCreate() {
+    setSelectedRoomId(null);
+    setStartTime(null);
+    setEndTime(null);
+    setCreateError("");
+    setCreateOpened(true);
+  }
+
+  async function handleCreate() {
+    if (!selectedRoomId || !startTime || !endTime) return;
+    setCreateLoading(true);
+    setCreateError("");
+    try {
+      const created = await createBooking({
+        userId: user!.userId,
+        roomId: Number(selectedRoomId),
+        startTime: startTime,
+        endTime: endTime,
+      });
+      setBookings((prev) => [...prev, created]);
+      setCreateOpened(false);
+    } catch (err: unknown) {
+      if (isAxiosError(err) && err.response?.status === 409) {
+        setCreateError(err.response.data.message);
+      } else {
+        setCreateError("Failed to create booking");
+      }
+    } finally {
+      setCreateLoading(false);
+    }
+  }
+
+  async function handleCancel() {
+    if (!cancelTarget) return;
+    setCancelLoading(true);
+    try {
+      await cancelBooking(cancelTarget.id);
+      setBookings((prev) =>
+        prev.map((b) =>
+          b.id === cancelTarget.id ? { ...b, status: "CANCELLED" } : b
+        )
+      );
+      setCancelTarget(null);
+    } finally {
+      setCancelLoading(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <Container>
+        <Loader mt="xl" />
+      </Container>
+    );
+  }
+
+  return (
+    <Container>
+      <Group justify="space-between" mb="md">
+        <Title order={2}>Bookings</Title>
+        <Button onClick={openCreate}>Create Booking</Button>
+      </Group>
+
+      {bookings.length === 0 ? (
+        <Text c="dimmed">No bookings found.</Text>
+      ) : (
+        <Table striped highlightOnHover>
+          <Table.Thead>
+            <Table.Tr>
+              {isAdmin && <Table.Th>User</Table.Th>}
+              <Table.Th>Room</Table.Th>
+              <Table.Th>Start Time</Table.Th>
+              <Table.Th>End Time</Table.Th>
+              <Table.Th>Status</Table.Th>
+              <Table.Th>Actions</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {bookings.map((booking) => (
+              <Table.Tr key={booking.id}>
+                {isAdmin && <Table.Td>{booking.userEmail}</Table.Td>}
+                <Table.Td>{booking.roomName}</Table.Td>
+                <Table.Td>
+                  {dayjs(booking.startTime).format("MMM D, YYYY HH:mm")}
+                </Table.Td>
+                <Table.Td>
+                  {dayjs(booking.endTime).format("MMM D, YYYY HH:mm")}
+                </Table.Td>
+                <Table.Td>
+                  <StatusBadge status={booking.status} />
+                </Table.Td>
+                <Table.Td>
+                  {booking.status === "CONFIRMED" && (
+                    <Button
+                      size="xs"
+                      variant="light"
+                      color="red"
+                      onClick={() => setCancelTarget(booking)}
+                    >
+                      Cancel
+                    </Button>
+                  )}
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      )}
+
+      <Modal
+        opened={createOpened}
+        onClose={() => setCreateOpened(false)}
+        title="Create Booking"
+      >
+        <Stack>
+          <Select
+            label="Room"
+            placeholder="Select a room"
+            data={rooms.map((r) => ({
+              value: String(r.id),
+              label: `${r.name} (capacity: ${r.capacity})`,
+            }))}
+            value={selectedRoomId}
+            onChange={setSelectedRoomId}
+          />
+          <DateTimePicker
+            label="Start Time"
+            placeholder="Pick start date and time"
+            value={startTime}
+            onChange={setStartTime}
+            minDate={new Date()}
+          />
+          <DateTimePicker
+            label="End Time"
+            placeholder="Pick end date and time"
+            value={endTime}
+            onChange={setEndTime}
+            minDate={startTime ? new Date(startTime) : new Date()}
+          />
+          {createError && (
+            <Alert color="red" title="Booking Error">
+              {createError}
+            </Alert>
+          )}
+          <Button
+            onClick={handleCreate}
+            loading={createLoading}
+            disabled={!selectedRoomId || !startTime || !endTime}
+          >
+            Create Booking
+          </Button>
+        </Stack>
+      </Modal>
+
+      <ConfirmModal
+        opened={!!cancelTarget}
+        onClose={() => setCancelTarget(null)}
+        onConfirm={handleCancel}
+        title="Cancel Booking"
+        message={`Are you sure you want to cancel the booking for "${cancelTarget?.roomName}"?`}
+        loading={cancelLoading}
+      />
+    </Container>
+  );
+}
+```
+
+Key patterns in this page:
+
+- **Role-aware fetching** — `Promise.all` loads bookings and rooms in parallel. Admins see all bookings (with a User column); regular users see only their own.
+- **Create booking modal** — The room `Select` is populated from the rooms API. `DateTimePicker` components enforce `minDate` so users can't book in the past and the end time can't precede the start time.
+- **409 conflict handling** — The `isAxiosError` type guard safely narrows the error, and the backend's conflict message is displayed directly in the modal via an `Alert`. The modal stays open so the user can adjust the times.
+- **Cancel flow** — After the backend sets the booking status to CANCELLED, the local state is patched in place (the row stays visible with an updated `StatusBadge`) rather than removed.
 
 ### Step 3 — Build a StatusBadge component
 
@@ -1170,34 +1471,33 @@ export default function StatusBadge({ status }: Props) {
 
 A small, reusable component that makes booking statuses visually distinct.
 
-### Step 4 — Build the Create Booking form
+### Step 4 — Create Booking form and conflict handling
 
-Create `src/pages/CreateBookingPage.tsx` or use a modal on BookingsPage:
+The create booking form is already built into the BookingsPage modal from Step 2. Here's a breakdown of how the key pieces work:
 
-- Fetch the list of rooms with `getRooms()` to populate a dropdown/select
-- Use Mantine's `DateTimePicker` for start and end times. In Mantine v8, `onChange` returns a **date string** instead of a `Date` object — this actually works well since the backend expects ISO-8601 strings
-- On submit, call `createBooking()`
-- If the response is `409 Conflict`, display the error message: "Room is already booked during this time"
-- Handle the 409 specifically:
+**Room selector** — The modal fetches all rooms via `getRooms()` (loaded in `loadData`) and maps them into Mantine's `Select` format: `{ value: "1", label: "Room A (capacity: 10)" }`. The `value` is a string because Mantine `Select` requires it; it's converted back to a number with `Number(selectedRoomId)` on submit.
+
+**Date/time pickers** — `DateTimePicker` from `@mantine/dates` returns a `Date | null`. The `minDate` prop prevents selecting past dates, and the end time's `minDate` is set to the selected start time so end can't precede start. On submit, `.toISOString()` converts to the ISO-8601 format the backend expects.
+
+**409 conflict handling** — This is the most important pattern in the project. When the backend detects a booking overlap, it returns a 409 with `{ message: "Room is already booked during this time" }`. The `handleCreate` function catches this specifically:
 
 ```typescript
 import { isAxiosError } from "axios";
 
 try {
   await createBooking(data);
-  navigate("/bookings");
 } catch (err: unknown) {
   if (isAxiosError(err) && err.response?.status === 409) {
-    setError(err.response.data.message);
+    setCreateError(err.response.data.message);
   } else {
-    setError("Failed to create booking");
+    setCreateError("Failed to create booking");
   }
 }
 ```
 
-Using `isAxiosError()` is the proper TypeScript pattern — it narrows the type from `unknown` to `AxiosError`, giving you type-safe access to `err.response`. Avoid `catch (err: any)` which disables all type checking.
+`isAxiosError()` is the proper TypeScript pattern — it narrows the type from `unknown` to `AxiosError`, giving type-safe access to `err.response`. The modal stays open and the error is displayed in an `Alert` so the user can adjust the times without losing their input. Avoid `catch (err: any)` which disables all type checking.
 
-This is a key feature of the project — it demonstrates that the frontend correctly surfaces backend conflict detection to the user.
+This demonstrates that the frontend correctly surfaces backend conflict detection to the user — a key feature of the project.
 
 ### Git Checkpoint
 
@@ -1248,16 +1548,261 @@ export async function deleteUser(id: number): Promise<void> {
 }
 ```
 
-### Step 2 — Build UsersPage
+### Step 2 — Build UsersPage and UserForm
+
+This page is only accessible to admins (the route is wrapped with `<ProtectedRoute requireAdmin>`). Build the `UserForm` component first, then the page.
+
+Create `src/components/UserForm.tsx`:
+
+```typescript
+import { useState } from "react";
+import { TextInput, PasswordInput, Select, Button, Stack } from "@mantine/core";
+import { UserRequest } from "../types";
+
+interface Props {
+  initialValues?: { email: string; role: string };
+  onSubmit: (data: UserRequest) => void;
+  loading?: boolean;
+}
+
+export default function UserForm({ initialValues, onSubmit, loading }: Props) {
+  const [email, setEmail] = useState(initialValues?.email || "");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<string>(initialValues?.role || "USER");
+  const [errors, setErrors] = useState<{
+    email?: string;
+    password?: string;
+  }>({});
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const newErrors: { email?: string; password?: string } = {};
+    if (!email.trim()) newErrors.email = "Email is required";
+    if (!initialValues && password.length < 6)
+      newErrors.password = "Password must be at least 6 characters";
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+    setErrors({});
+    const data: UserRequest = { email: email.trim(), password, role };
+    onSubmit(data);
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <Stack>
+        <TextInput
+          label="Email"
+          placeholder="user@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.currentTarget.value)}
+          error={errors.email}
+        />
+        <PasswordInput
+          label={initialValues ? "New Password (leave blank to keep)" : "Password"}
+          placeholder="••••••"
+          value={password}
+          onChange={(e) => setPassword(e.currentTarget.value)}
+          error={errors.password}
+        />
+        <Select
+          label="Role"
+          data={[
+            { value: "USER", label: "User" },
+            { value: "ADMIN", label: "Admin" },
+          ]}
+          value={role}
+          onChange={(val) => setRole(val || "USER")}
+        />
+        <Button type="submit" loading={loading}>
+          {initialValues ? "Update" : "Create"}
+        </Button>
+      </Stack>
+    </form>
+  );
+}
+```
+
+Key details:
+- When editing, the password field is optional — the label changes to indicate this, and validation only requires it for new users
+- The role `Select` defaults to USER and provides both options
+- The `UserRequest` type includes `role?: string`, matching the backend DTO
 
 Create `src/pages/UsersPage.tsx`:
 
-- This page is only accessible to admins (the route is wrapped with `<ProtectedRoute requireAdmin>`)
-- Fetch all users with `getUsers()`
-- Display a table with columns: Email, Role, Actions
-- Add buttons to create, edit, and delete users
-- Reuse the `ConfirmModal` component for delete confirmations
-- Build a `UserForm` component similar to `RoomForm` with email, password, and a role selector (USER / ADMIN)
+```typescript
+import { useState, useEffect } from "react";
+import {
+  Container,
+  Title,
+  Table,
+  Button,
+  Group,
+  Loader,
+  Text,
+  Modal,
+  Badge,
+} from "@mantine/core";
+import { getUsers, createUser, updateUser, deleteUser } from "../api/users";
+import { UserResponse, UserRequest } from "../types";
+import UserForm from "../components/UserForm";
+import ConfirmModal from "../components/ConfirmModal";
+
+export default function UsersPage() {
+  const [users, setUsers] = useState<UserResponse[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [formOpened, setFormOpened] = useState(false);
+  const [editingUser, setEditingUser] = useState<UserResponse | null>(null);
+  const [formLoading, setFormLoading] = useState(false);
+
+  const [deleteTarget, setDeleteTarget] = useState<UserResponse | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
+  useEffect(() => {
+    loadUsers();
+  }, []);
+
+  async function loadUsers() {
+    try {
+      const data = await getUsers();
+      setUsers(data);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openCreate() {
+    setEditingUser(null);
+    setFormOpened(true);
+  }
+
+  function openEdit(u: UserResponse) {
+    setEditingUser(u);
+    setFormOpened(true);
+  }
+
+  async function handleFormSubmit(data: UserRequest) {
+    setFormLoading(true);
+    try {
+      if (editingUser) {
+        const updated = await updateUser(editingUser.id, data);
+        setUsers((prev) =>
+          prev.map((u) => (u.id === updated.id ? updated : u))
+        );
+      } else {
+        const created = await createUser(data);
+        setUsers((prev) => [...prev, created]);
+      }
+      setFormOpened(false);
+    } finally {
+      setFormLoading(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    setDeleteLoading(true);
+    try {
+      await deleteUser(deleteTarget.id);
+      setUsers((prev) => prev.filter((u) => u.id !== deleteTarget.id));
+      setDeleteTarget(null);
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <Container>
+        <Loader mt="xl" />
+      </Container>
+    );
+  }
+
+  return (
+    <Container>
+      <Group justify="space-between" mb="md">
+        <Title order={2}>Users</Title>
+        <Button onClick={openCreate}>Create User</Button>
+      </Group>
+
+      {users.length === 0 ? (
+        <Text c="dimmed">No users found.</Text>
+      ) : (
+        <Table striped highlightOnHover>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Email</Table.Th>
+              <Table.Th>Role</Table.Th>
+              <Table.Th>Actions</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {users.map((u) => (
+              <Table.Tr key={u.id}>
+                <Table.Td>{u.email}</Table.Td>
+                <Table.Td>
+                  <Badge color={u.role === "ADMIN" ? "blue" : "gray"}>
+                    {u.role}
+                  </Badge>
+                </Table.Td>
+                <Table.Td>
+                  <Group gap="xs">
+                    <Button
+                      size="xs"
+                      variant="light"
+                      onClick={() => openEdit(u)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="light"
+                      color="red"
+                      onClick={() => setDeleteTarget(u)}
+                    >
+                      Delete
+                    </Button>
+                  </Group>
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      )}
+
+      <Modal
+        opened={formOpened}
+        onClose={() => setFormOpened(false)}
+        title={editingUser ? "Edit User" : "Create User"}
+      >
+        <UserForm
+          initialValues={
+            editingUser
+              ? { email: editingUser.email, role: editingUser.role }
+              : undefined
+          }
+          onSubmit={handleFormSubmit}
+          loading={formLoading}
+        />
+      </Modal>
+
+      <ConfirmModal
+        opened={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDelete}
+        title="Delete User"
+        message={`Are you sure you want to delete "${deleteTarget?.email}"?`}
+        loading={deleteLoading}
+      />
+    </Container>
+  );
+}
+```
+
+This page follows the exact same structure as RoomsPage — list, create/edit modal, delete confirmation. The only differences are the data columns (Email + Role instead of Name + Capacity) and the `Badge` component to color-code roles. Since this page is route-guarded to admins, there's no need for `{isAdmin && ...}` conditionals — every visitor is an admin.
 
 ### Git Checkpoint
 
@@ -1279,34 +1824,118 @@ git commit -m "feat: add admin user management page"
 
 Create `src/pages/DashboardPage.tsx`:
 
-- On mount, fetch rooms and bookings
-  - Admin: `getRooms()`, `getAllBookings()`
-  - User: `getRooms()`, `getMyBookings()`
-- Display summary cards using Mantine's `Card` or `Paper` components:
-  - Total rooms
-  - Total bookings (or "my bookings" for USER)
-  - Upcoming bookings (filter bookings where `startTime` is in the future)
-- For USER: highlight their next upcoming booking (the closest future booking)
-- For ADMIN: show system-wide counts
-
-Example card layout:
-
 ```typescript
-<SimpleGrid cols={3}>
-  <Paper p="md" shadow="sm">
-    <Text size="sm" c="dimmed">Total Rooms</Text>
-    <Text size="xl" fw={700}>{rooms.length}</Text>
-  </Paper>
-  <Paper p="md" shadow="sm">
-    <Text size="sm" c="dimmed">Total Bookings</Text>
-    <Text size="xl" fw={700}>{bookings.length}</Text>
-  </Paper>
-  <Paper p="md" shadow="sm">
-    <Text size="sm" c="dimmed">Upcoming</Text>
-    <Text size="xl" fw={700}>{upcomingCount}</Text>
-  </Paper>
-</SimpleGrid>
+import { useState, useEffect } from "react";
+import {
+  Container,
+  Title,
+  SimpleGrid,
+  Paper,
+  Text,
+  Loader,
+  Stack,
+} from "@mantine/core";
+import dayjs from "dayjs";
+import { useAuth } from "../context/AuthContext";
+import { getRooms } from "../api/rooms";
+import { getAllBookings, getMyBookings } from "../api/bookings";
+import { RoomResponse, BookingResponse } from "../types";
+
+export default function DashboardPage() {
+  const { isAdmin, user } = useAuth();
+  const [rooms, setRooms] = useState<RoomResponse[]>([]);
+  const [bookings, setBookings] = useState<BookingResponse[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const [roomData, bookingData] = await Promise.all([
+          getRooms(),
+          isAdmin ? getAllBookings() : getMyBookings(),
+        ]);
+        setRooms(roomData);
+        setBookings(bookingData);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadData();
+  }, []);
+
+  const now = dayjs();
+  const upcoming = bookings.filter(
+    (b) => b.status === "CONFIRMED" && dayjs(b.startTime).isAfter(now)
+  );
+  const nextBooking = upcoming.sort((a, b) =>
+    dayjs(a.startTime).diff(dayjs(b.startTime))
+  )[0];
+
+  if (loading) {
+    return (
+      <Container>
+        <Loader mt="xl" />
+      </Container>
+    );
+  }
+
+  return (
+    <Container>
+      <Title order={2} mb="md">
+        {isAdmin ? "Admin Dashboard" : `Welcome, ${user?.email}`}
+      </Title>
+
+      <SimpleGrid cols={{ base: 1, sm: 3 }} mb="xl">
+        <Paper p="md" shadow="sm" radius="md" withBorder>
+          <Text size="sm" c="dimmed">
+            Total Rooms
+          </Text>
+          <Text size="xl" fw={700}>
+            {rooms.length}
+          </Text>
+        </Paper>
+        <Paper p="md" shadow="sm" radius="md" withBorder>
+          <Text size="sm" c="dimmed">
+            {isAdmin ? "Total Bookings" : "My Bookings"}
+          </Text>
+          <Text size="xl" fw={700}>
+            {bookings.length}
+          </Text>
+        </Paper>
+        <Paper p="md" shadow="sm" radius="md" withBorder>
+          <Text size="sm" c="dimmed">
+            Upcoming
+          </Text>
+          <Text size="xl" fw={700}>
+            {upcoming.length}
+          </Text>
+        </Paper>
+      </SimpleGrid>
+
+      {nextBooking && (
+        <Paper p="md" shadow="sm" radius="md" withBorder>
+          <Stack gap="xs">
+            <Text size="sm" c="dimmed">
+              Next Upcoming Booking
+            </Text>
+            <Text fw={600}>{nextBooking.roomName}</Text>
+            <Text size="sm">
+              {dayjs(nextBooking.startTime).format("MMM D, YYYY HH:mm")} —{" "}
+              {dayjs(nextBooking.endTime).format("HH:mm")}
+            </Text>
+          </Stack>
+        </Paper>
+      )}
+    </Container>
+  );
+}
 ```
+
+Key patterns:
+- **Role-aware heading** — Admins see "Admin Dashboard"; regular users see a personalized greeting
+- **Responsive grid** — `cols={{ base: 1, sm: 3 }}` stacks cards on mobile, shows three columns on wider screens
+- **Derived state** — `upcoming` and `nextBooking` are computed from the bookings array using `dayjs`, not stored as separate state. This avoids syncing multiple pieces of state.
+- **Next booking highlight** — The upcoming bookings are sorted chronologically and the first one is displayed in a separate card, giving users a quick glance at what's next
 
 ### Git Checkpoint
 
